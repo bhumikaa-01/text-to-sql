@@ -19,17 +19,16 @@ _SessionLocal: sessionmaker | None = None  # type: ignore[type-arg]
 
 
 def get_engine() -> Engine:
-    """Return the shared SQLAlchemy engine, creating it on first call."""
     global _engine
     if _engine is None:
         url = os.getenv("DATABASE_URL", "sqlite:///./data/olist.db")
+
+        print("=" * 50)
+        print("DATABASE_URL =", url)
+        print("CURRENT WORKING DIR =", os.getcwd())
+        print("=" * 50)
+
         if url.startswith("sqlite"):
-            # INTERN NOTE: file-based SQLite uses NullPool (one connection per
-            # checkout, returned to the OS on close).  StaticPool is only
-            # appropriate for *in-memory* SQLite (:memory:) where multiple
-            # pool checkouts would otherwise open separate in-memory databases.
-            # check_same_thread=False is still required so FastAPI's async
-            # worker threads can safely reuse the same file-based connection.
             _engine = create_engine(
                 url,
                 connect_args={"check_same_thread": False},
@@ -37,6 +36,7 @@ def get_engine() -> Engine:
             )
         else:
             _engine = create_engine(url)
+
     return _engine
 
 

@@ -39,6 +39,15 @@ class ApproveResponse(BaseModel):
     results: list[dict[str, Any]]
     message: str
 
+class QueryResponse(BaseModel):
+    sql: str
+    results: list[dict[str, Any]]
+    tables_used: list[str]
+    requires_approval: bool
+    approval_reason: str = ""
+    latency_ms: int
+    error: str = ""
+
 
 @router.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest) -> QueryResponse:

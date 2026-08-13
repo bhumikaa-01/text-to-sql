@@ -7,6 +7,7 @@ python -m agent.build_index
 """
 
 import os
+import time
 import logging
 
 from dotenv import load_dotenv
@@ -19,14 +20,20 @@ from agent.semantic_layer import SEMANTIC_SCHEMA
 
 load_dotenv()
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO")
+)
+
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "schema_index"
+EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 
 def serialize_table(table: dict) -> str:
-    """Convert a table schema into text for embedding."""
+    """
+    Convert a table schema into text for embedding.
+    """
 
     lines = [
         f"Table: {table['table_name']}",
@@ -43,7 +50,11 @@ def serialize_table(table: dict) -> str:
 
 
 def build_index() -> None:
-    """Build and persist schema embeddings."""
+    """
+    Build and persist schema embeddings.
+    """
+
+    start_time = time.time()
 
     persist_dir = os.getenv(
         "CHROMA_PERSIST_DIR",
@@ -51,7 +62,7 @@ def build_index() -> None:
     )
 
     logger.info(
-        "Initializing ChromaDB client at %s",
+        "Initializing ChromaDB at %s",
         persist_dir,
     )
 
@@ -61,25 +72,39 @@ def build_index() -> None:
 
     embedding_fn = (
         SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+            model_name=EMBEDDING_MODEL
         )
     )
 
+    # Delete old collection if it exists
     try:
-        client.delete_collection(
-            COLLECTION_NAME
+        existing = [
+            c.name
+            for c in client.list_collections()
+        ]
+
+        if COLLECTION_NAME in existing:
+            client.delete_collection(
+                COLLECTION_NAME
+            )
+
+            logger.info(
+                "Deleted existing collection '%s'",
+                COLLECTION_NAME,
+            )
+
+    except Exception as exc:
+        logger.warning(
+            "Could not delete collection: %s",
+            exc,
         )
-        logger.info(
-            "Deleted existing collection '%s'",
-            COLLECTION_NAME,
-        )
-    except Exception:
-        pass
 
     collection = client.create_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_fn,
-        metadata={"hnsw:space": "cosine"},
+        metadata={
+            "hnsw:space": "cosine"
+        },
     )
 
     documents = []
@@ -87,23 +112,28 @@ def build_index() -> None:
     ids = []
 
     for table in SEMANTIC_SCHEMA:
-        text = serialize_table(table)
 
-        documents.append(text)
+        table_name = table["table_name"]
+
+        documents.append(
+            serialize_table(table)
+        )
+
         metadatas.append(
             {
-                "table_name": table["table_name"]
+                "table_name": table_name
             }
         )
-        ids.append(table["table_name"])
+
+        ids.append(table_name)
 
         logger.info(
-            "Prepared embedding for table: %s",
-            table["table_name"],
+            "Prepared schema: %s",
+            table_name,
         )
 
     logger.info(
-        "Upserting %d documents into ChromaDB...",
+        "Adding %d schema documents...",
         len(documents),
     )
 
@@ -113,9 +143,30 @@ def build_index() -> None:
         ids=ids,
     )
 
+    final_count = collection.count()
+
+    elapsed = round(
+        time.time() - start_time,
+        2
+    )
+
     logger.info(
-        "Index build complete. %d tables indexed.",
-        len(documents),
+        "Index build complete."
+    )
+
+    logger.info(
+        "Documents indexed: %d",
+        final_count,
+    )
+
+    logger.info(
+        "Embedding model: %s",
+        EMBEDDING_MODEL,
+    )
+
+    logger.info(
+        "Build time: %.2f seconds",
+        elapsed,
     )
 
 

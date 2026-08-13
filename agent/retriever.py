@@ -4,6 +4,7 @@ retriever.py — RAG-based schema retrieval from ChromaDB.
 
 import os
 import logging
+from functools import lru_cache
 from typing import Optional
 
 import chromadb
@@ -19,20 +20,30 @@ COLLECTION_NAME = "schema_index"
 _client: Optional[chromadb.PersistentClient] = None
 _collection = None
 
-# Load once and reuse
+# Load embedding model once at startup
 _embedding_model = SentenceTransformer(
     "all-MiniLM-L6-v2"
 )
 
 
+@lru_cache(maxsize=256)
+def cached_embedding(text: str):
+    """
+    Cache embeddings for repeated queries.
+    """
+    return tuple(
+        _embedding_model.encode(text)
+    )
+
+
 def get_embedding(text: str):
     """
-    Generate embeddings using the same model
-    used during index creation.
+    Generate embedding for query.
+    Uses cache when available.
     """
-    return _embedding_model.encode(
-        text
-    ).tolist()
+    return list(
+        cached_embedding(text)
+    )
 
 
 def _get_collection():
@@ -50,6 +61,11 @@ def _get_collection():
         "./chroma_store"
     )
 
+    logger.info(
+        "Loading Chroma collection from %s",
+        persist_dir
+    )
+
     _client = chromadb.PersistentClient(
         path=persist_dir
     )
@@ -63,10 +79,11 @@ def _get_collection():
 
 def get_relevant_schema(
     query: str,
-    k: int = 3
+    k: int = 2
 ) -> str:
     """
-    Retrieve most relevant schema documents.
+    Retrieve the most relevant schema documents
+    for a user question.
     """
 
     try:
@@ -99,9 +116,17 @@ def get_relevant_schema(
             or "documents" not in results
             or not results["documents"]
         ):
+            logger.warning(
+                "No schema documents retrieved."
+            )
             return ""
 
         documents = results["documents"][0]
+
+        logger.info(
+            "Retrieved %d schema chunks.",
+            len(documents)
+        )
 
         return "\n\n---\n\n".join(
             documents

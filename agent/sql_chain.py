@@ -37,6 +37,7 @@ from agent.hitl_guard import check_sql
 from agent.retriever import get_relevant_schema
 from model.database import get_engine, get_session
 from model.schema import Base, QueryLog
+from agent.schema_validator import validate_sql_schema
 
 load_dotenv()
 
@@ -214,29 +215,24 @@ def _execute_sql(sql: str) -> list[dict[str, Any]]:
 async def run_query(question: str) -> dict[str, Any]:
     """
     Full LCEL pipeline: natural-language question → SQL → executed results.
-
-    Returns:
-        {
-            "sql": str,
-            "results": list[dict],
-            "tables_used": list[str],
-            "requires_approval": bool,
-            "latency_ms": int,
-        }
     """
+
     start_time = time.monotonic()
     generated_sql = ""
     tables_used: list[str] = []
     error_msg: str | None = None
 
     try:
-        # Step 1: Retrieve relevant schema snippets via RAG
-        schema_context = get_relevant_schema(question, k=3)
+        # Step 1: Retrieve schema context
+        schema_context = get_relevant_schema(
+            question,
+            k=3,
+        )
 
-        # Step 2: Load few-shot examples
+        # Step 2: Few-shot examples
         few_shot = _load_few_shot_examples()
 
-        # Step 3: Build prompt
+        # Step 3: Prompt
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", SYSTEM_PROMPT),
@@ -244,10 +240,10 @@ async def run_query(question: str) -> dict[str, Any]:
             ]
         )
 
-        # Step 4: Get cached LLM instance (temperature=0 for deterministic SQL)
+        # Step 4: LLM
         llm = _get_llm()
 
-        # Step 5: Build LCEL chain: prompt | llm | str parser
+        # Step 5: Chain
         chain = prompt | llm | StrOutputParser()
 
         raw_response: str = await chain.ainvoke(
@@ -258,42 +254,157 @@ async def run_query(question: str) -> dict[str, Any]:
             }
         )
 
-        generated_sql = _extract_sql(raw_response)
-        tables_used = _extract_table_names(generated_sql)
+        logger.info(
+            "Raw LLM response:\n%s",
+            raw_response,
+        )
 
-        # Step 6: HITL safety check
-        guard_result = check_sql(generated_sql)
-        latency_ms = int((time.monotonic() - start_time) * 1000)
+        generated_sql = _extract_sql(
+            raw_response
+        ).strip()
 
-        if guard_result["requires_approval"]:
-            _log_query(question, generated_sql, latency_ms, tables_used, error=None)
+        logger.info(
+            "Extracted SQL:\n%s",
+            generated_sql,
+        )
+
+        # -----------------------------------------
+        # Empty SQL Guardrail
+        # -----------------------------------------
+        if not generated_sql:
+            raise ValueError(
+                "Model did not generate valid SQL."
+            )
+
+        tables_used = _extract_table_names(
+            generated_sql
+        )
+
+        # -----------------------------------------
+        # Schema Validation Guardrail
+        # -----------------------------------------
+        is_valid, schema_error = (
+            validate_sql_schema(
+                generated_sql
+            )
+        )
+
+        if not is_valid:
+            latency_ms = int(
+                (time.monotonic() - start_time)
+                * 1000
+            )
+
+            logger.warning(
+                "Schema validation failed: %s",
+                schema_error,
+            )
+
+            _log_query(
+                question,
+                generated_sql,
+                latency_ms,
+                tables_used,
+                error=schema_error,
+            )
+
+            return {
+                "sql": generated_sql,
+                "results": [],
+                "tables_used": tables_used,
+                "requires_approval": False,
+                "approval_reason": "",
+                "latency_ms": latency_ms,
+                "error": schema_error,
+            }
+
+        # -----------------------------------------
+        # HITL Guardrail
+        # -----------------------------------------
+        guard_result = check_sql(
+            generated_sql
+        )
+
+        latency_ms = int(
+            (time.monotonic() - start_time)
+            * 1000
+        )
+
+        if guard_result[
+            "requires_approval"
+        ]:
+            _log_query(
+                question,
+                generated_sql,
+                latency_ms,
+                tables_used,
+                error=None,
+            )
+
             return {
                 "sql": generated_sql,
                 "results": [],
                 "tables_used": tables_used,
                 "requires_approval": True,
-                "approval_reason": guard_result.get("reason", ""),
+                "approval_reason": guard_result.get(
+                    "reason",
+                    "",
+                ),
                 "latency_ms": latency_ms,
+                "error": "",
             }
 
-        # Step 7: Execute the SQL
-        results = await asyncio.to_thread(_execute_sql, generated_sql)
-        latency_ms = int((time.monotonic() - start_time) * 1000)
+        # -----------------------------------------
+        # Execute SQL
+        # -----------------------------------------
+        results = await asyncio.to_thread(
+            _execute_sql,
+            generated_sql,
+        )
 
-        # Step 8: Log to query_log
-        _log_query(question, generated_sql, latency_ms, tables_used, error=None)
+        latency_ms = int(
+            (time.monotonic() - start_time)
+            * 1000
+        )
+
+        _log_query(
+            question,
+            generated_sql,
+            latency_ms,
+            tables_used,
+            error=None,
+        )
 
         return {
             "sql": generated_sql,
             "results": results,
             "tables_used": tables_used,
             "requires_approval": False,
+            "approval_reason": "",
             "latency_ms": latency_ms,
+            "error": "",
         }
 
     except Exception as exc:
-        latency_ms = int((time.monotonic() - start_time) * 1000)
+        latency_ms = int(
+            (time.monotonic() - start_time)
+            * 1000
+        )
+
         error_msg = str(exc)
-        logger.error("run_query failed: %s", exc, exc_info=True)
-        _log_query(question, generated_sql, latency_ms, tables_used, error=error_msg)
+
+        logger.error(
+            "run_query failed: %s",
+            exc,
+            exc_info=True,
+        )
+
+        _log_query(
+            question,
+            generated_sql,
+            latency_ms,
+            tables_used,
+            error=error_msg,
+        )
+
         raise

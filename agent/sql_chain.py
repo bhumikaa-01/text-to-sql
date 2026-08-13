@@ -71,7 +71,25 @@ Rules:
 5. For SQLite date operations use strftime(); never use DATE_TRUNC or EXTRACT.
 6. Prefer NULLIF(x, 0) to avoid division-by-zero.
 7. Limit results to 1000 rows unless the question asks for all rows.
-8. Never generate INSERT, UPDATE, DELETE, or DROP statements.
+
+8. For monetary values and revenue calculations:
+   - Always use ROUND(value, 2).
+   - Use ROUND(SUM(...), 2) for revenue aggregations.
+   - Use ROUND(AVG(...), 2) for averages.
+   - Never return floating-point values with excessive precision.
+
+9. Never generate INSERT, UPDATE, DELETE, or DROP statements.
+Examples:
+
+Question: What is the total revenue?
+SQL:
+SELECT ROUND(SUM(fo.order_total_usd), 2) AS total_revenue
+FROM fact_orders fo;
+
+Question: What is the average order value?
+SQL:
+SELECT ROUND(AVG(fo.order_total_usd), 2) AS avg_order_value
+FROM fact_orders fo;
 
 --- RELEVANT SCHEMA ---
 {schema}

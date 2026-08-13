@@ -8,7 +8,7 @@ from typing import Optional
 
 import chromadb
 from dotenv import load_dotenv
-from google import genai
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
@@ -19,21 +19,20 @@ COLLECTION_NAME = "schema_index"
 _client: Optional[chromadb.PersistentClient] = None
 _collection = None
 
+# Load once and reuse
+_embedding_model = SentenceTransformer(
+    "all-MiniLM-L6-v2"
+)
+
 
 def get_embedding(text: str):
     """
-    Generate embeddings using Gemini.
+    Generate embeddings using the same model
+    used during index creation.
     """
-    client = genai.Client(
-        api_key=os.getenv("GOOGLE_API_KEY")
-    )
-
-    response = client.models.embed_content(
-        model="text-embedding-004",
-        contents=text,
-    )
-
-    return response.embeddings[0].values
+    return _embedding_model.encode(
+        text
+    ).tolist()
 
 
 def _get_collection():
@@ -81,16 +80,32 @@ def get_relevant_schema(
             )
             return ""
 
-        query_embedding = get_embedding(query)
+        query_embedding = get_embedding(
+            query
+        )
 
         results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=min(k, collection_count),
+            query_embeddings=[
+                query_embedding
+            ],
+            n_results=min(
+                k,
+                collection_count
+            ),
         )
+
+        if (
+            not results
+            or "documents" not in results
+            or not results["documents"]
+        ):
+            return ""
 
         documents = results["documents"][0]
 
-        return "\n\n---\n\n".join(documents)
+        return "\n\n---\n\n".join(
+            documents
+        )
 
     except Exception as exc:
         logger.warning(

@@ -31,19 +31,82 @@ class Base(DeclarativeBase):
 class FactOrders(Base):
     __tablename__ = "fact_orders"
 
-    order_id = Column(String(64), primary_key=True)
-    user_id = Column(String(64), ForeignKey("dim_users.user_id"), nullable=True, index=True)
-    product_id = Column(String(64), ForeignKey("dim_products.product_id"), nullable=True, index=True)
-    seller_id = Column(String(64), ForeignKey("dim_sellers.seller_id"), nullable=True, index=True)
-    order_total_usd = Column(Numeric(12, 2), nullable=False, default=0)
-    freight_value_usd = Column(Numeric(12, 2), nullable=False, default=0)
-    order_status = Column(String(32), nullable=False, default="unknown")
-    created_at = Column(DateTime, nullable=False, default=lambda: datetime.utcnow())
+    fact_id = Column(
+        Integer,
+        primary_key=True,
+        autoincrement=True
+    )
 
-    user = relationship("DimUsers", back_populates="orders")
-    product = relationship("DimProducts", back_populates="orders")
-    seller = relationship("DimSellers", back_populates="orders")
-    review = relationship("DimReviews", back_populates="order", uselist=False)
+    order_id = Column(
+        String(64),
+        nullable=False,
+        index=True
+    )
+
+    user_id = Column(
+        String(64),
+        ForeignKey("dim_users.user_id"),
+        nullable=True,
+        index=True
+    )
+
+    product_id = Column(
+        String(64),
+        ForeignKey("dim_products.product_id"),
+        nullable=True,
+        index=True
+    )
+
+    seller_id = Column(
+        String(64),
+        ForeignKey("dim_sellers.seller_id"),
+        nullable=True,
+        index=True
+    )
+
+    order_total_usd = Column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0
+    )
+
+    freight_value_usd = Column(
+        Numeric(12, 2),
+        nullable=False,
+        default=0
+    )
+
+    order_status = Column(
+        String(32),
+        nullable=False,
+        default="unknown"
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=lambda: datetime.utcnow()
+    )
+
+    user = relationship(
+        "DimUsers",
+        back_populates="orders"
+    )
+
+    product = relationship(
+        "DimProducts",
+        back_populates="orders"
+    )
+
+    seller = relationship(
+        "DimSellers",
+        back_populates="orders"
+    )
+
+    reviews = relationship(
+    "DimReviews",
+    back_populates="order"
+)
 
 
 class DimUsers(Base):
@@ -94,13 +157,25 @@ class DimGeography(Base):
 class DimReviews(Base):
     __tablename__ = "dim_reviews"
 
-    review_id = Column(String(64), primary_key=True)
-    order_id = Column(String(64), ForeignKey("fact_orders.order_id"), nullable=False, index=True, unique=True)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    review_id = Column(String(64), nullable=False, index=True)
+
+    order_id = Column(
+        String(64),
+        ForeignKey("fact_orders.order_id"),
+        nullable=False,
+        index=True
+    )
+
     review_score = Column(Integer, nullable=True)
+
     review_comment = Column(Text, nullable=True)
 
-    order = relationship("FactOrders", back_populates="review")
-
+    order = relationship(
+        "FactOrders",
+        back_populates="reviews"
+    )
 
 class QueryLog(Base):
     __tablename__ = "query_log"

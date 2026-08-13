@@ -173,28 +173,108 @@ def load_dim_sellers(sellers_df: pd.DataFrame, engine) -> None:
 
 
 def load_dim_geography(geo_df: pd.DataFrame, engine) -> None:
-    """Load dim_geography from olist_geolocation_dataset.csv (deduplicated by zip+city)."""
-    logger.info("Loading dim_geography (raw %d rows)...", len(geo_df))
-    geo_dedup = geo_df.drop_duplicates(subset=["geolocation_zip_code_prefix", "geolocation_city"])
+    """
+    Load dim_geography from olist_geolocation_dataset.csv.
+    Deduplicate by (zip_code_prefix, city).
+    """
+
+    logger.info(
+        "Loading dim_geography (raw %d rows)...",
+        len(geo_df)
+    )
+
+    # Normalize fields
+    geo_df["zip_code_prefix"] = (
+        geo_df["geolocation_zip_code_prefix"]
+        .astype(str)
+        .str.zfill(5)
+    )
+
+    geo_df["city"] = (
+        geo_df["geolocation_city"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    geo_df["state"] = (
+        geo_df["geolocation_state"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+    )
+
+    # Remove duplicate zip+city combinations
+    geo_dedup = geo_df.drop_duplicates(
+        subset=["zip_code_prefix", "city"]
+    )
+
     records = [
         {
-            "zip_code_prefix": str(row["geolocation_zip_code_prefix"]).zfill(5),
-            "city": str(row.get("geolocation_city", "")).strip().title() or None,
-            "state": str(row.get("geolocation_state", "")).strip().upper() or None,
-            "lat": float(row["geolocation_lat"]) if pd.notna(row.get("geolocation_lat")) else None,
-            "lng": float(row["geolocation_lng"]) if pd.notna(row.get("geolocation_lng")) else None,
+            "zip_code_prefix": row["zip_code_prefix"],
+            "city": row["city"],
+            "state": row["state"],
+            "lat": (
+                float(row["geolocation_lat"])
+                if pd.notna(row["geolocation_lat"])
+                else None
+            ),
+            "lng": (
+                float(row["geolocation_lng"])
+                if pd.notna(row["geolocation_lng"])
+                else None
+            ),
         }
         for _, row in geo_dedup.iterrows()
     ]
 
+    print("Records:", len(records))
+
+    # Sanity check for duplicates
+    seen = set()
+    dupes = []
+
+    for r in records:
+        key = (
+            r["zip_code_prefix"],
+            r["city"]
+        )
+
+        if key in seen:
+            dupes.append(key)
+        else:
+            seen.add(key)
+
+    print("Duplicate keys found:", len(dupes))
+
+    if dupes:
+        print("First 20 duplicates:")
+        print(dupes[:20])
+
     from sqlalchemy.orm import Session
 
     with Session(engine) as session:
-        for chunk_start in range(0, len(records), 2000):
-            chunk = records[chunk_start : chunk_start + 2000]
-            session.bulk_insert_mappings(DimGeography, chunk)
+        for chunk_start in range(
+            0,
+            len(records),
+            2000
+        ):
+            chunk = records[
+                chunk_start:
+                chunk_start + 2000
+            ]
+
+            session.bulk_insert_mappings(
+                DimGeography,
+                chunk
+            )
+
             session.commit()
-    logger.info("dim_geography loaded: %d unique zip+city combinations.", len(records))
+
+    logger.info(
+        "dim_geography loaded: %d unique zip+city combinations.",
+        len(records),
+    )
 
 
 def load_fact_orders(
@@ -255,37 +335,91 @@ def load_fact_orders(
 
 def load_dim_reviews(reviews_df: pd.DataFrame, engine) -> None:
     """Load dim_reviews from olist_order_reviews_dataset.csv."""
+
     logger.info("Loading dim_reviews (%d rows)...", len(reviews_df))
-    # Deduplicate by review_id
-    reviews_dedup = reviews_df.drop_duplicates(subset=["review_id"])
+
+    # Remove duplicate review_ids
+    reviews_dedup = reviews_df.drop_duplicates(
+        subset=["review_id"],
+        keep="first"
+    )
+
+    # Remove duplicate order_ids
+    reviews_dedup = reviews_dedup.drop_duplicates(
+        subset=["order_id"],
+        keep="first"
+    )
+
+    print("Reviews after dedup:", len(reviews_dedup))
+    print(
+        "Remaining duplicate review_ids:",
+        reviews_dedup["review_id"].duplicated().sum()
+    )
+    print(
+        "Remaining duplicate order_ids:",
+        reviews_dedup["order_id"].duplicated().sum()
+    )
+
     records = [
         {
             "review_id": str(row["review_id"]),
             "order_id": str(row["order_id"]),
-            "review_score": int(row["review_score"]) if pd.notna(row.get("review_score")) else None,
-            "review_comment": str(row["review_comment_message"]) if pd.notna(row.get("review_comment_message")) else None,
+            "review_score": (
+                int(row["review_score"])
+                if pd.notna(row["review_score"])
+                else None
+            ),
+            "review_comment": (
+                str(row["review_comment_message"])
+                if pd.notna(row["review_comment_message"])
+                else None
+            ),
         }
         for _, row in reviews_dedup.iterrows()
     ]
 
-    # Filter to only orders that exist in fact_orders to maintain FK integrity
+    # Keep only reviews whose orders exist in fact_orders
     from sqlalchemy import text
 
-    with get_engine().connect() as conn:
+    with engine.connect() as conn:
         existing_orders = {
-            row[0] for row in conn.execute(text("SELECT order_id FROM fact_orders"))
+            row[0]
+            for row in conn.execute(
+                text("SELECT order_id FROM fact_orders")
+            )
         }
-    records = [r for r in records if r["order_id"] in existing_orders]
+
+    records = [
+        r
+        for r in records
+        if r["order_id"] in existing_orders
+    ]
+
+    print("Reviews after FK filtering:", len(records))
 
     from sqlalchemy.orm import Session
 
     with Session(engine) as session:
         for chunk_start in range(0, len(records), 2000):
-            chunk = records[chunk_start : chunk_start + 2000]
-            session.bulk_insert_mappings(DimReviews, chunk)
-            session.commit()
-    logger.info("dim_reviews loaded: %d reviews.", len(records))
+            chunk = records[chunk_start: chunk_start + 2000]
 
+            session.bulk_insert_mappings(
+                DimReviews,
+                chunk
+            )
+
+            session.commit()
+
+            logger.info(
+                "  dim_reviews: inserted rows %d–%d",
+                chunk_start,
+                min(chunk_start + 2000, len(records))
+            )
+
+    logger.info(
+        "dim_reviews loaded: %d reviews.",
+        len(records)
+    )
 
 def seed() -> None:
     """Main entry point: create schema, load all dimension and fact tables."""

@@ -27,23 +27,13 @@ _embedding_model = SentenceTransformer(
 
 
 @lru_cache(maxsize=256)
+
 def cached_embedding(text: str):
-    """
-    Cache embeddings for repeated queries.
-    """
-    return tuple(
-        _embedding_model.encode(text)
-    )
+    return [float(x) for x in _embedding_model.encode(text)]
 
 
 def get_embedding(text: str):
-    """
-    Generate embedding for query.
-    Uses cache when available.
-    """
-    return list(
-        cached_embedding(text)
-    )
+    return cached_embedding(text)
 
 
 def _get_collection():
@@ -81,6 +71,7 @@ def get_relevant_schema(
     query: str,
     k: int = 2
 ) -> str:
+
     """
     Retrieve the most relevant schema documents
     for a user question.
@@ -89,7 +80,15 @@ def get_relevant_schema(
     try:
         collection = _get_collection()
 
+        logger.info("COLLECTION LOADED")
+
         collection_count = collection.count()
+
+        logger.info(
+            "Collection count: %d",
+            collection_count
+        )
+
 
         if collection_count == 0:
             logger.warning(
@@ -124,6 +123,11 @@ def get_relevant_schema(
         documents = results["documents"][0]
 
         logger.info(
+            "DOCUMENTS FOUND: %d",
+            len(documents)
+        )
+
+        logger.info(
             "Retrieved %d schema chunks.",
             len(documents)
         )
@@ -133,8 +137,7 @@ def get_relevant_schema(
         )
 
     except Exception as exc:
-        logger.warning(
-            "Schema retrieval failed: %s",
-            exc
-        )
-        return ""
+        print("!!!!!!!! RETRIEVER ERROR !!!!!!!!")
+        print(type(exc))
+        print(exc)
+        raise

@@ -16,6 +16,18 @@ sql_chain.py — LangChain LCEL pipeline: question → SQL → results.
 #
 # temperature=0 is critical: we want the most deterministic SQL possible.
 # Any creativity in SQL generation leads to incorrect queries.
+
+#prompt = f"""
+#You are a Text-to-SQL assistant.
+
+#Relevant Schema:
+#{schema_context}
+
+#Question:
+#{question}
+
+#Generate SQL only.
+"""
 """
 
 import asyncio
@@ -38,6 +50,7 @@ from agent.retriever import get_relevant_schema
 from model.database import get_engine, get_session
 from model.schema import Base, QueryLog
 from agent.schema_validator import validate_sql_schema
+
 
 load_dotenv()
 
@@ -222,12 +235,20 @@ async def run_query(question: str) -> dict[str, Any]:
     tables_used: list[str] = []
     error_msg: str | None = None
 
+
     try:
+
         # Step 1: Retrieve schema context
         schema_context = get_relevant_schema(
             question,
             k=3,
         )
+
+        logger.info(
+        "Schema context length: %d",
+        len(schema_context)
+        )
+
 
         # Step 2: Few-shot examples
         few_shot = _load_few_shot_examples()
@@ -269,14 +290,33 @@ async def run_query(question: str) -> dict[str, Any]:
         )
 
         # -----------------------------------------
-        # Empty SQL Guardrail
+            # Empty SQL Guardrail
         # -----------------------------------------
         if not generated_sql:
-            raise ValueError(
-                "Model did not generate valid SQL."
+            latency_ms = int(
+            (time.monotonic() - start_time)
+            * 1000
+        )
+
+            logger.warning(
+                "Model returned empty SQL for question: %s",
+                question,
             )
 
-        tables_used = _extract_table_names(
+            return {
+                "sql": "",
+                "results": [],
+                "tables_used": [],
+                "requires_approval": False,
+                "approval_reason": "",
+                "latency_ms": latency_ms,
+                "error": (
+                    "The model could not generate a valid SQL query "
+                    "for this question."
+                ),
+            }
+
+        tables_used = _extract_table_names( 
             generated_sql
         )
 

@@ -125,7 +125,7 @@ export default function ChatWindow({ messages, setMessages, onAnswer }: Props) {
                           fontSize: '12px',
                           padding: '8px 12px',
                         }}>
-                          No results returned.
+                          I could not find the requested information in the available database schema..
                         </div>
                       )}
                     </>

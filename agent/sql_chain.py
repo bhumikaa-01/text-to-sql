@@ -311,8 +311,9 @@ async def run_query(question: str) -> dict[str, Any]:
                 "approval_reason": "",
                 "latency_ms": latency_ms,
                 "error": (
-                    "The model could not generate a valid SQL query "
-                    "for this question."
+                    "I could not find the requested information in the available "
+                    "database schema. Try asking about orders, customers, products, "
+                    "sellers, reviews, or revenue."
                 ),
             }
 

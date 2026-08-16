@@ -12,3 +12,9 @@ node_modules/
 dist/
 build/
 .vite/
+# Evaluation generated output
+evaluation/evaluation_results.json
+
+# Python cache
+*.pyo
+*.pyd

@@ -43,7 +43,6 @@ OUTPUT_PATH = (
 
 RESUME_EVALUATION = True
 
-
 # ============================================================
 # DATASET
 # ============================================================
@@ -496,6 +495,274 @@ def classify_status(
 # SINGLE QUESTION EVALUATION
 # ============================================================
 
+def classify_failure(
+    status: str,
+    generated_sql: str,
+    expected_sql: str,
+    error: str = "",
+) -> tuple[str, str]:
+    """
+    Classify why an evaluation failed.
+
+    Returns:
+        (failure_category, failure_reason)
+    """
+
+    if status == "RATE_LIMITED":
+        return (
+            "RATE_LIMITED",
+            "The LLM provider quota or rate limit was exceeded.",
+        )
+
+    if status == "EXECUTION ERROR":
+        return (
+            "EXECUTION_ERROR",
+            error or "Generated SQL failed during execution.",
+        )
+
+    if status == "EVALUATION_ERROR":
+        return (
+            "EVALUATION_ERROR",
+            error or "The evaluation process encountered an error.",
+        )
+
+    if status == "WRONG SQL":
+        return (
+            "SQL_GENERATION_ERROR",
+            "Generated SQL did not match the expected SQL structure or semantics.",
+        )
+
+    if status == "WRONG RESULT":
+
+        generated_lower = (
+            generated_sql.lower()
+        )
+
+        expected_lower = (
+            expected_sql.lower()
+        )
+
+        # Aggregation-related failure
+        aggregation_functions = [
+            "count(",
+            "sum(",
+            "avg(",
+            "min(",
+            "max(",
+        ]
+
+        generated_aggregations = [
+            fn
+            for fn in aggregation_functions
+            if fn in generated_lower
+        ]
+
+        expected_aggregations = [
+            fn
+            for fn in aggregation_functions
+            if fn in expected_lower
+        ]
+
+        if (
+            generated_aggregations
+            != expected_aggregations
+        ):
+            return (
+                "AGGREGATION_ERROR",
+                "Generated SQL uses a different aggregation strategy from the expected query.",
+            )
+
+        # Join-related failure
+        generated_has_join = (
+            " join "
+            in generated_lower
+        )
+
+        expected_has_join = (
+            " join "
+            in expected_lower
+        )
+
+        if (
+            generated_has_join
+            != expected_has_join
+        ):
+            return (
+                "JOIN_ERROR",
+                "Generated SQL uses a different join strategy from the expected query.",
+            )
+
+        # Filter-related failure
+        generated_has_where = (
+            " where "
+            in generated_lower
+        )
+
+        expected_has_where = (
+            " where "
+            in expected_lower
+        )
+
+        if (
+            generated_has_where
+            != expected_has_where
+        ):
+            return (
+                "FILTER_ERROR",
+                "Generated SQL uses a different filtering strategy from the expected query.",
+            )
+
+        return (
+            "SEMANTIC_RESULT_ERROR",
+            "Generated SQL executed successfully but produced an incorrect result.",
+        )
+
+    return (
+        "",
+        "",
+    )
+def classify_failure(
+    status: str,
+    generated_sql: str,
+    expected_sql: str,
+    error: str = "",
+) -> tuple[str, str]:
+    """
+    Classify the reason for an unsuccessful evaluation.
+
+    Returns:
+        failure_category, failure_reason
+    """
+
+    if status == "RATE_LIMITED":
+        return (
+            "RATE_LIMITED",
+            "LLM provider quota or rate limit was exceeded.",
+        )
+
+    if status == "EXECUTION ERROR":
+        return (
+            "EXECUTION_ERROR",
+            error
+            or "Generated SQL failed during execution.",
+        )
+
+    if status == "EVALUATION_ERROR":
+        return (
+            "EVALUATION_ERROR",
+            error
+            or "The evaluation pipeline encountered an error.",
+        )
+
+    if status == "WRONG SQL":
+        return (
+            "SQL_GENERATION_ERROR",
+            "Generated SQL did not match the expected SQL structure.",
+        )
+
+    if status == "WRONG RESULT":
+
+        generated_lower = (
+            generated_sql.lower()
+        )
+
+        expected_lower = (
+            expected_sql.lower()
+        )
+
+        # ----------------------------------------------------
+        # Aggregation mismatch
+        # ----------------------------------------------------
+
+        aggregation_functions = [
+            "count(",
+            "sum(",
+            "avg(",
+            "min(",
+            "max(",
+        ]
+
+        generated_aggregations = [
+            fn
+            for fn in aggregation_functions
+            if fn in generated_lower
+        ]
+
+        expected_aggregations = [
+            fn
+            for fn in aggregation_functions
+            if fn in expected_lower
+        ]
+
+        if (
+            generated_aggregations
+            != expected_aggregations
+        ):
+            return (
+                "AGGREGATION_ERROR",
+                "Generated SQL uses a different aggregation strategy from the expected SQL.",
+            )
+
+        # ----------------------------------------------------
+        # JOIN mismatch
+        # ----------------------------------------------------
+
+        generated_has_join = (
+            " join "
+            in generated_lower
+        )
+
+        expected_has_join = (
+            " join "
+            in expected_lower
+        )
+
+        if (
+            generated_has_join
+            != expected_has_join
+        ):
+            return (
+                "JOIN_ERROR",
+                "Generated SQL uses a different join strategy from the expected SQL.",
+            )
+
+        # ----------------------------------------------------
+        # WHERE/filter mismatch
+        # ----------------------------------------------------
+
+        generated_has_where = (
+            " where "
+            in generated_lower
+        )
+
+        expected_has_where = (
+            " where "
+            in expected_lower
+        )
+
+        if (
+            generated_has_where
+            != expected_has_where
+        ):
+            return (
+                "FILTER_ERROR",
+                "Generated SQL uses a different filtering strategy from the expected SQL.",
+            )
+
+        # ----------------------------------------------------
+        # Generic semantic error
+        # ----------------------------------------------------
+
+        return (
+            "SEMANTIC_RESULT_ERROR",
+            "Generated SQL executed successfully but produced an incorrect result.",
+        )
+
+    return (
+        "",
+        "",
+    )
+
 async def evaluate_question(
     item: dict[str, Any]
 ) -> dict[str, Any]:
@@ -544,6 +811,15 @@ async def evaluate_question(
                 exc
             )
 
+            elapsed = (
+                time.perf_counter()
+                - start_time
+            )
+
+            # ------------------------------------------------
+            # Rate-limit detection
+            # ------------------------------------------------
+
             if (
                 "RESOURCE_EXHAUSTED"
                 in error_message
@@ -553,60 +829,125 @@ async def evaluate_question(
                 in error_message.lower()
             ):
 
+                status = (
+                    "RATE_LIMITED"
+                )
+
+                failure_category = (
+                    "RATE_LIMITED"
+                )
+
+                failure_reason = (
+                    "LLM provider quota or rate limit was exceeded."
+                )
+
                 return {
                     "id": item["id"],
                     "question": question,
+
+                    "status": status,
+
                     "generated_sql": "",
-                    "expected_sql": item[
-                    "expected_sql"
-                    ],
-                    "execution_success": False,
-                    "result_correct": False,
-                    "table_correct": False,
+                    "expected_sql": expected_sql,
+
                     "sql_correct": False,
+                    "table_correct": False,
+                    "result_correct": False,
+
+                    "execution_success": False,
+
                     "generated_tables": [],
                     "expected_tables": sorted(
                         expected_tables
                     ),
+
+                    "generated_results": [],
+                    "expected_results": expected_results,
+
                     "latency_ms": round(
-                        (
-                            time.perf_counter()
-                            - start_time
-                        )
-                        * 1000,
+                        elapsed * 1000,
                         2
                     ),
-                    "status": "RATE_LIMITED",
+
+                    "error_type": (
+                        "RATE_LIMITED"
+                    ),
+
+                    "failure_category": (
+                        failure_category
+                    ),
+
+                    "failure_reason": (
+                        failure_reason
+                    ),
+
                     "error": error_message,
                 }
+
+            # -----------------------------------------------
+            # Other model execution errors
+            # -----------------------------------------------
+
+            status = (
+                "EVALUATION_ERROR"
+            )
+
+            failure_category = (
+                "EVALUATION_ERROR"
+            )
+
+            failure_reason = (
+                error_message
+                or
+                "The model query could not be executed."
+            )
 
             return {
                 "id": item["id"],
                 "question": question,
+
+                "status": status,
+
                 "generated_sql": "",
-                "expected_sql": item[
-                "expected_sql"
-                ],
-                "execution_success": False,
-                "result_correct": False,
-                "table_correct": False,
+                "expected_sql": expected_sql,
+
                 "sql_correct": False,
+                "table_correct": False,
+                "result_correct": False,
+
+                "execution_success": False,
+
                 "generated_tables": [],
                 "expected_tables": sorted(
                     expected_tables
                 ),
+
+                "generated_results": [],
+                "expected_results": expected_results,
+
                 "latency_ms": round(
-                    (
-                        time.perf_counter()
-                        - start_time
-                    )
-                    * 1000,
+                    elapsed * 1000,
                     2
                 ),
-                "status": "EVALUATION_ERROR",
+
+                "error_type": (
+                    "EVALUATION_ERROR"
+                ),
+
+                "failure_category": (
+                    failure_category
+                ),
+
+                "failure_reason": (
+                    failure_reason
+                ),
+
                 "error": error_message,
             }
 
+        # ----------------------------------------------------
+        # 3. Extract generated query information
+        # ----------------------------------------------------
 
         elapsed = (
             time.perf_counter()
@@ -636,7 +977,7 @@ async def evaluate_question(
         )
 
         # ----------------------------------------------------
-        # 3. Determine execution success
+        # 4. Determine execution success
         # ----------------------------------------------------
 
         execution_success = bool(
@@ -645,33 +986,40 @@ async def evaluate_question(
         )
 
         # ----------------------------------------------------
-        # 4. Individual evaluation dimensions
+        # 5. Individual evaluation dimensions
         # ----------------------------------------------------
 
         sql_correct = False
 
         if generated_sql:
-            sql_correct = sql_exact_match(
-                generated_sql,
-                expected_sql
+
+            sql_correct = (
+                sql_exact_match(
+                    generated_sql,
+                    expected_sql
+                )
             )
 
-        table_correct = tables_match(
-            list(generated_tables),
-            list(expected_tables)
+        table_correct = (
+            tables_match(
+                list(generated_tables),
+                list(expected_tables)
+            )
         )
 
         result_correct = False
 
         if execution_success:
 
-            result_correct = results_match(
-                generated_results,
-                expected_results
+            result_correct = (
+                results_match(
+                    generated_results,
+                    expected_results
+                )
             )
 
         # ----------------------------------------------------
-        # 5. Error classification
+        # 6. Error classification
         # ----------------------------------------------------
 
         error_type = classify_error(
@@ -679,7 +1027,7 @@ async def evaluate_question(
         )
 
         # ----------------------------------------------------
-        # 6. Final status
+        # 7. Final status
         # ----------------------------------------------------
 
         status = classify_status(
@@ -690,6 +1038,32 @@ async def evaluate_question(
             sql_correct=sql_correct,
             error_type=error_type,
         )
+
+        # ----------------------------------------------------
+        # 8. Failure analysis
+        # ----------------------------------------------------
+
+        failure_category = ""
+        failure_reason = ""
+
+        if status not in {
+            "PASS",
+            "EQUIVALENT SQL",
+        }:
+
+            (
+                failure_category,
+                failure_reason,
+            ) = classify_failure(
+                status=status,
+                generated_sql=generated_sql,
+                expected_sql=expected_sql,
+                error=error,
+            )
+
+        # ----------------------------------------------------
+        # 9. Return evaluation result
+        # ----------------------------------------------------
 
         return {
             "id": item["id"],
@@ -704,7 +1078,9 @@ async def evaluate_question(
             "table_correct": table_correct,
             "result_correct": result_correct,
 
-            "execution_success": execution_success,
+            "execution_success": (
+                execution_success
+            ),
 
             "generated_tables": sorted(
                 generated_tables
@@ -728,66 +1104,121 @@ async def evaluate_question(
             ),
 
             "error_type": error_type,
+
+            "failure_category": (
+                failure_category
+            ),
+
+            "failure_reason": (
+                failure_reason
+            ),
+
             "error": error,
         }
+
+    # ========================================================
+    # Unexpected evaluation-pipeline error
+    # ========================================================
 
     except Exception as exc:
 
         elapsed = (
-        time.perf_counter()
-        - start_time
-    )
+            time.perf_counter()
+            - start_time
+        )
 
-    error_message = str(exc)
+        error_message = str(
+            exc
+        )
 
-    error_type = classify_error(
-        error_message
-    )
+        error_type = (
+            classify_error(
+                error_message
+            )
+        )
 
-    if error_type == "RATE_LIMITED":
-        status = "RATE_LIMITED"
-    else:
-        status = "EVALUATION_ERROR"
+        if (
+            error_type
+            == "RATE_LIMITED"
+        ):
 
-    return {
-        "id": item["id"],
-        "question": question,
+            status = (
+                "RATE_LIMITED"
+            )
 
-        "status": status,
+            failure_category = (
+                "RATE_LIMITED"
+            )
 
-        "generated_sql": generated_sql,
-        "expected_sql": expected_sql,
+            failure_reason = (
+                "LLM provider quota or rate limit was exceeded."
+            )
 
-        "sql_correct": False,
-        "table_correct": False,
-        "result_correct": False,
+        else:
 
-        "execution_success": False,
+            status = (
+                "EVALUATION_ERROR"
+            )
 
-        "generated_tables": sorted(
-            generated_tables
-        ),
+            failure_category = (
+                "EVALUATION_ERROR"
+            )
 
-        "expected_tables": sorted(
-            expected_tables
-        ),
+            failure_reason = (
+                error_message
+                or
+                "The evaluation pipeline encountered an unexpected error."
+            )
 
-        "generated_results": (
-            generated_results
-        ),
+        return {
+            "id": item["id"],
+            "question": question,
 
-        "expected_results": [],
+            "status": status,
 
-        "latency_ms": round(
-            elapsed * 1000,
-            2
-        ),
+            "generated_sql": generated_sql,
+            "expected_sql": expected_sql,
 
-        "error_type": error_type
-        or "EVALUATION_ERROR",
+            "sql_correct": False,
+            "table_correct": False,
+            "result_correct": False,
 
-        "error": error_message,
-    }
+            "execution_success": False,
+
+            "generated_tables": sorted(
+                generated_tables
+            ),
+
+            "expected_tables": sorted(
+                expected_tables
+            ),
+
+            "generated_results": (
+                generated_results
+            ),
+
+            "expected_results": [],
+
+            "latency_ms": round(
+                elapsed * 1000,
+                2
+            ),
+
+            "error_type": (
+                error_type
+                or "EVALUATION_ERROR"
+            ),
+
+            "failure_category": (
+                failure_category
+            ),
+
+            "failure_reason": (
+                failure_reason
+            ),
+
+            "error": error_message,
+        }
 
 
 # ============================================================
@@ -1218,6 +1649,137 @@ async def run_evaluation():
 
     for label, count in status_counts:
         print(f"{label:<28}: {count}")
+
+    # --------------------------------------------------------
+    # Failure Analysis
+    # --------------------------------------------------------
+
+    failure_categories = {}
+
+    for evaluation in results:
+
+        category = evaluation.get(
+            "failure_category",
+            ""
+        )
+
+        if not category:
+            continue
+
+        failure_categories[category] = (
+            failure_categories.get(
+                category,
+                0
+            ) + 1
+        )
+
+    print()
+    print("Failure Analysis")
+    print("-" * 70)
+
+    if failure_categories:
+
+        for category, count in sorted(
+            failure_categories.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        ):
+
+            print(
+                f"{category:<28}: "
+                f"{count}"
+            )
+
+    else:
+
+        print(
+            "No failures detected."
+        )
+
+        # --------------------------------------------------------
+    # Failure Details
+    # --------------------------------------------------------
+
+    failed_evaluations = [
+        evaluation
+        for evaluation in results
+        if evaluation.get("status")
+        not in {
+            "PASS",
+            "EQUIVALENT SQL",
+        }
+    ]
+
+    print()
+    print("Failure Details")
+    print("-" * 70)
+
+    if failed_evaluations:
+
+        for evaluation in failed_evaluations:
+
+            print()
+            print(
+                f"{evaluation.get('id', 'UNKNOWN')} "
+                f"| "
+                f"{evaluation.get('status', 'UNKNOWN')}"
+            )
+
+            print(
+                f"{'Question':<20}: "
+                f"{evaluation.get('question', '')}"
+            )
+
+            print(
+                f"{'Failure category':<20}: "
+                f"{evaluation.get('failure_category', 'N/A')}"
+            )
+
+            print(
+                f"{'Failure reason':<20}: "
+                f"{evaluation.get('failure_reason', 'N/A')}"
+            )
+
+            print(
+                f"{'Error type':<20}: "
+                f"{evaluation.get('error_type', 'N/A')}"
+            )
+
+            print(
+                f"{'Latency':<20}: "
+                f"{evaluation.get('latency_ms', 0):.2f} ms"
+            )
+
+            generated_sql = evaluation.get(
+                "generated_sql",
+                ""
+            )
+
+            expected_sql = evaluation.get(
+                "expected_sql",
+                ""
+            )
+
+            if generated_sql:
+
+                print()
+                print("Generated SQL:")
+                print(generated_sql)
+
+            if expected_sql:
+
+                print()
+                print("Expected SQL:")
+                print(expected_sql)
+
+            print()
+            print("-" * 70)
+
+    else:
+
+        print(
+            "No failed evaluations."
+        )
 
     # --------------------------------------------------------
     # Performance Metrics

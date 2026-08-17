@@ -227,45 +227,96 @@ def _execute_sql(sql: str) -> list[dict[str, Any]]:
 
 async def run_query(question: str) -> dict[str, Any]:
     """
-    Full LCEL pipeline: natural-language question → SQL → executed results.
+    Full Text-to-SQL pipeline:
+
+        Natural-language question
+                    ↓
+             Schema retrieval
+                    ↓
+                  LLM
+                    ↓
+             SQL extraction
+                    ↓
+             SQL safety guard
+                    ↓
+            Schema validation
+                    ↓
+             SQL execution
+                    ↓
+                 Results
+
+    Safety principle:
+        LLM-generated SQL is never trusted directly.
+        Every generated query must pass deterministic
+        safety and schema validation before execution.
     """
 
     start_time = time.monotonic()
-    generated_sql = ""
-    tables_used: list[str] = []
-    error_msg: str | None = None
 
+    generated_sql = ""
+
+    tables_used: list[str] = []
+
+    error_msg: str | None = None
 
     try:
 
-        # Step 1: Retrieve schema context
+        # ====================================================
+        # STEP 1 — Retrieve relevant schema
+        # ====================================================
+
         schema_context = get_relevant_schema(
             question,
             k=3,
         )
 
         logger.info(
-        "Schema context length: %d",
-        len(schema_context)
+            "Schema context length: %d",
+            len(schema_context),
         )
 
+        # ====================================================
+        # STEP 2 — Few-shot examples
+        # ====================================================
 
-        # Step 2: Few-shot examples
         few_shot = _load_few_shot_examples()
 
-        # Step 3: Prompt
+        # ====================================================
+        # STEP 3 — Build prompt
+        # ====================================================
+
         prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", SYSTEM_PROMPT),
-                ("human", USER_PROMPT),
+                (
+                    "system",
+                    SYSTEM_PROMPT,
+                ),
+                (
+                    "human",
+                    USER_PROMPT,
+                ),
             ]
         )
 
-        # Step 4: LLM
+        # ====================================================
+        # STEP 4 — Initialize LLM
+        # ====================================================
+
         llm = _get_llm()
 
-        # Step 5: Chain
-        chain = prompt | llm | StrOutputParser()
+        # ====================================================
+        # STEP 5 — Build chain
+        # ====================================================
+
+        chain = (
+            prompt
+            | llm
+            | StrOutputParser()
+        )
+
+        # ====================================================
+        # STEP 6 — Generate SQL
+        # ====================================================
 
         raw_response: str = await chain.ainvoke(
             {
@@ -289,14 +340,19 @@ async def run_query(question: str) -> dict[str, Any]:
             generated_sql,
         )
 
-        # -----------------------------------------
-            # Empty SQL Guardrail
-        # -----------------------------------------
+        # ====================================================
+        # STEP 7 — Empty SQL guardrail
+        # ====================================================
+
         if not generated_sql:
+
             latency_ms = int(
-            (time.monotonic() - start_time)
-            * 1000
-        )
+                (
+                    time.monotonic()
+                    - start_time
+                )
+                * 1000
+            )
 
             logger.warning(
                 "Model returned empty SQL for question: %s",
@@ -309,21 +365,126 @@ async def run_query(question: str) -> dict[str, Any]:
                 "tables_used": [],
                 "requires_approval": False,
                 "approval_reason": "",
+                "risk_level": "HIGH",
                 "latency_ms": latency_ms,
                 "error": (
-                    "I could not find the requested information in the available "
-                    "database schema. Try asking about orders, customers, products, "
-                    "sellers, reviews, or revenue."
+                    "I could not find the requested information "
+                    "in the available database schema. Try asking "
+                    "about orders, customers, products, sellers, "
+                    "reviews, or revenue."
                 ),
             }
 
-        tables_used = _extract_table_names( 
+        # ====================================================
+        # STEP 8 — SQL SAFETY GUARD
+        # ====================================================
+        #
+        # This MUST happen before schema validation and
+        # database execution.
+        #
+        # The LLM is never trusted with write operations.
+        # ====================================================
+
+        guard_result = check_sql(
             generated_sql
         )
 
-        # -----------------------------------------
-        # Schema Validation Guardrail
-        # -----------------------------------------
+        logger.info(
+            "SQL safety check: "
+            "allowed=%s risk=%s operation=%s",
+            guard_result.get(
+                "allowed"
+            ),
+            guard_result.get(
+                "risk_level"
+            ),
+            guard_result.get(
+                "operation"
+            ),
+        )
+
+        # ----------------------------------------------------
+        # Block unsafe SQL
+        # ----------------------------------------------------
+
+        if not guard_result.get(
+            "allowed",
+            False,
+        ):
+
+            latency_ms = int(
+                (
+                    time.monotonic()
+                    - start_time
+                )
+                * 1000
+            )
+
+            safety_reason = (
+                guard_result.get(
+                    "reason",
+                    "SQL safety validation failed.",
+                )
+            )
+
+            risk_level = (
+                guard_result.get(
+                    "risk_level",
+                    "HIGH",
+                )
+            )
+
+            operation = (
+                guard_result.get(
+                    "operation",
+                    "UNKNOWN",
+                )
+            )
+
+            logger.warning(
+                "SQL blocked by safety guard. "
+                "operation=%s risk=%s reason=%s",
+                operation,
+                risk_level,
+                safety_reason,
+            )
+
+            _log_query(
+                question,
+                generated_sql,
+                latency_ms,
+                tables_used,
+                error=safety_reason,
+            )
+
+            return {
+                "sql": generated_sql,
+                "results": [],
+                "tables_used": [],
+                "requires_approval": False,
+                "approval_reason": safety_reason,
+                "risk_level": risk_level,
+                "operation": operation,
+                "latency_ms": latency_ms,
+                "error": (
+                    "The generated SQL was blocked by "
+                    "the database safety guard: "
+                    f"{safety_reason}"
+                ),
+            }
+
+        # ====================================================
+        # STEP 9 — Extract referenced tables
+        # ====================================================
+
+        tables_used = _extract_table_names(
+            generated_sql
+        )
+
+        # ====================================================
+        # STEP 10 — Schema validation
+        # ====================================================
+
         is_valid, schema_error = (
             validate_sql_schema(
                 generated_sql
@@ -331,8 +492,12 @@ async def run_query(question: str) -> dict[str, Any]:
         )
 
         if not is_valid:
+
             latency_ms = int(
-                (time.monotonic() - start_time)
+                (
+                    time.monotonic()
+                    - start_time
+                )
                 * 1000
             )
 
@@ -355,58 +520,32 @@ async def run_query(question: str) -> dict[str, Any]:
                 "tables_used": tables_used,
                 "requires_approval": False,
                 "approval_reason": "",
+                "risk_level": "HIGH",
+                "operation": "SCHEMA_VALIDATION",
                 "latency_ms": latency_ms,
                 "error": schema_error,
             }
 
-        # -----------------------------------------
-        # HITL Guardrail
-        # -----------------------------------------
-        guard_result = check_sql(
-            generated_sql
-        )
+        # ====================================================
+        # STEP 11 — Execute SQL
+        # ====================================================
 
-        latency_ms = int(
-            (time.monotonic() - start_time)
-            * 1000
-        )
-
-        if guard_result[
-            "requires_approval"
-        ]:
-            _log_query(
-                question,
-                generated_sql,
-                latency_ms,
-                tables_used,
-                error=None,
-            )
-
-            return {
-                "sql": generated_sql,
-                "results": [],
-                "tables_used": tables_used,
-                "requires_approval": True,
-                "approval_reason": guard_result.get(
-                    "reason",
-                    "",
-                ),
-                "latency_ms": latency_ms,
-                "error": "",
-            }
-
-        # -----------------------------------------
-        # Execute SQL
-        # -----------------------------------------
         results = await asyncio.to_thread(
             _execute_sql,
             generated_sql,
         )
 
         latency_ms = int(
-            (time.monotonic() - start_time)
+            (
+                time.monotonic()
+                - start_time
+            )
             * 1000
         )
+
+        # ====================================================
+        # STEP 12 — Log successful execution
+        # ====================================================
 
         _log_query(
             question,
@@ -416,23 +555,49 @@ async def run_query(question: str) -> dict[str, Any]:
             error=None,
         )
 
+        # ====================================================
+        # STEP 13 — Return result
+        # ====================================================
+
         return {
             "sql": generated_sql,
             "results": results,
             "tables_used": tables_used,
             "requires_approval": False,
             "approval_reason": "",
+            "risk_level": (
+                guard_result.get(
+                    "risk_level",
+                    "LOW",
+                )
+            ),
+            "operation": (
+                guard_result.get(
+                    "operation",
+                    "SELECT",
+                )
+            ),
             "latency_ms": latency_ms,
             "error": "",
         }
 
+    # ========================================================
+    # GLOBAL ERROR HANDLING
+    # ========================================================
+
     except Exception as exc:
+
         latency_ms = int(
-            (time.monotonic() - start_time)
+            (
+                time.monotonic()
+                - start_time
+            )
             * 1000
         )
 
-        error_msg = str(exc)
+        error_msg = str(
+            exc
+        )
 
         logger.error(
             "run_query failed: %s",

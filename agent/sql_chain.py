@@ -53,6 +53,10 @@ from agent.schema_validator import validate_sql_schema
 from agent.query_guard import check_query_resources
 from agent.confidence import calculate_confidence
 from agent.semantic_evaluator import evaluate_semantics
+from agent.query_cache import (
+    get_cached_response,
+    set_cached_response,
+)
 
 load_dotenv()
 
@@ -262,6 +266,26 @@ async def run_query(
     """
 
     start_time = time.monotonic()
+
+    # ====================================================
+    # STEP — Query cache lookup
+    # ====================================================
+
+    cached_response = get_cached_response(question)
+
+    if cached_response is not None:
+
+        logger.info(
+            "Query cache HIT for question: %s",
+            question,
+        )
+
+        return cached_response
+
+    logger.info(
+        "Query cache MISS for question: %s",
+        question,
+    )
 
     generated_sql = ""
     tables_used: list[str] = []
@@ -875,7 +899,7 @@ async def run_query(
         # STEP 19 — Successful response
         # ====================================================
 
-        return {
+        response = {
             "sql": generated_sql,
             "results": results,
             "tables_used": tables_used,
@@ -890,14 +914,28 @@ async def run_query(
                 "reason": resource_reason,
             },
 
-            "semantic_evaluation": semantic_evaluation,
-
             "confidence": confidence,
 
             "latency_ms": latency_ms,
 
             "error": "",
         }
+
+        # ====================================================
+        # STEP — Store successful response in cache
+        # ====================================================
+
+        set_cached_response(
+            question,
+            response,
+        )
+
+        logger.info(
+            "Query response cached for question: %s",
+            question,
+        )
+
+        return response
 
     # ========================================================
     # GLOBAL ERROR HANDLING

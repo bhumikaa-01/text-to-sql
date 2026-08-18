@@ -51,6 +51,7 @@ from model.database import get_engine, get_session
 from model.schema import Base, QueryLog
 from agent.schema_validator import validate_sql_schema
 from agent.query_guard import check_query_resources
+from agent.confidence import calculate_confidence
 
 
 load_dotenv()
@@ -255,6 +256,8 @@ async def run_query(
             ↓
         SQL execution
             ↓
+        Confidence calculation
+            ↓
         Structured response
     """
 
@@ -367,6 +370,21 @@ async def run_query(
                 question,
             )
 
+            confidence = calculate_confidence(
+                sql_safe=False,
+                schema_valid=False,
+                resource_decision="BLOCK",
+                execution_success=False,
+                result_quality=0,
+                table_correct=None,
+            )
+
+            logger.info(
+                "Confidence score: %.2f (%s)",
+                confidence["score"],
+                confidence["level"],
+            )
+
             return {
                 "sql": "",
                 "results": [],
@@ -379,12 +397,14 @@ async def run_query(
                     "decision": "BLOCK",
                     "risk_level": "HIGH",
                     "violations": [
-                        "EMPTY_SQL"
+                        "EMPTY_SQL",
                     ],
                     "reason": (
                         "The model did not generate a valid SQL query."
                     ),
                 },
+
+                "confidence": confidence,
 
                 "latency_ms": latency_ms,
 
@@ -415,15 +435,9 @@ async def run_query(
         logger.info(
             "SQL safety check: "
             "allowed=%s risk=%s operation=%s",
-            safety_result.get(
-                "allowed"
-            ),
-            safety_result.get(
-                "risk_level"
-            ),
-            safety_result.get(
-                "operation"
-            ),
+            safety_result.get("allowed"),
+            safety_result.get("risk_level"),
+            safety_result.get("operation"),
         )
 
         # ----------------------------------------------------
@@ -461,6 +475,15 @@ async def run_query(
                 error=safety_reason,
             )
 
+            confidence = calculate_confidence(
+                sql_safe=False,
+                schema_valid=True,
+                resource_decision="BLOCK",
+                execution_success=False,
+                result_quality=0,
+                table_correct=False,
+            )
+
             return {
                 "sql": generated_sql,
                 "results": [],
@@ -480,6 +503,8 @@ async def run_query(
                     ],
                     "reason": safety_reason,
                 },
+
+                "confidence": confidence,
 
                 "latency_ms": latency_ms,
                 "error": safety_reason,
@@ -523,6 +548,15 @@ async def run_query(
                 error=schema_reason,
             )
 
+            confidence = calculate_confidence(
+                sql_safe=True,
+                schema_valid=False,
+                resource_decision="BLOCK",
+                execution_success=False,
+                result_quality=0,
+                table_correct=False,
+            )
+
             return {
                 "sql": generated_sql,
                 "results": [],
@@ -539,6 +573,8 @@ async def run_query(
                     ],
                     "reason": schema_reason,
                 },
+
+                "confidence": confidence,
 
                 "latency_ms": latency_ms,
                 "error": schema_reason,
@@ -610,6 +646,15 @@ async def run_query(
                 error=resource_reason,
             )
 
+            confidence = calculate_confidence(
+                sql_safe=True,
+                schema_valid=True,
+                resource_decision="BLOCK",
+                execution_success=False,
+                result_quality=0,
+                table_correct=False,
+            )
+
             return {
                 "sql": generated_sql,
                 "results": [],
@@ -624,6 +669,8 @@ async def run_query(
                     "violations": resource_violations,
                     "reason": resource_reason,
                 },
+
+                "confidence": confidence,
 
                 "latency_ms": latency_ms,
                 "error": resource_reason,
@@ -717,7 +764,36 @@ async def run_query(
         )
 
         # ====================================================
-        # STEP 15 — Calculate latency
+        # STEP 15 — Calculate result quality
+        # ====================================================
+
+        result_quality = (
+            100.0
+            if results
+            else 70.0
+        )
+
+        # ====================================================
+        # STEP 16 — Calculate confidence
+        # ====================================================
+
+        confidence = calculate_confidence(
+            sql_safe=True,
+            schema_valid=True,
+            resource_decision=resource_decision,
+            execution_success=True,
+            result_quality=result_quality,
+            table_correct=None,
+        )
+
+        logger.info(
+            "Confidence score: %.2f (%s)",
+            confidence["score"],
+            confidence["level"],
+        )
+
+        # ====================================================
+        # STEP 17 — Calculate latency
         # ====================================================
 
         latency_ms = int(
@@ -729,7 +805,7 @@ async def run_query(
         )
 
         # ====================================================
-        # STEP 16 — Log successful query
+        # STEP 18 — Log successful query
         # ====================================================
 
         _log_query(
@@ -741,7 +817,7 @@ async def run_query(
         )
 
         # ====================================================
-        # STEP 17 — Successful response
+        # STEP 19 — Successful response
         # ====================================================
 
         return {
@@ -758,6 +834,8 @@ async def run_query(
                 "violations": resource_violations,
                 "reason": resource_reason,
             },
+
+            "confidence": confidence,
 
             "latency_ms": latency_ms,
 

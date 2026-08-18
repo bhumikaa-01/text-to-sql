@@ -317,6 +317,37 @@ def validate_columns(
         ] = output_columns
 
     # --------------------------------------------------------
+    # 3. Extract SELECT aliases
+    # --------------------------------------------------------
+    #
+    # Example:
+    #
+    # SELECT
+    #     strftime('%Y-%m', created_at) AS month
+    #
+    # Later:
+    #
+    # GROUP BY month
+    # ORDER BY month
+    #
+    # "month" is a derived SQL alias, not a physical
+    # database column.
+    #
+
+    select_aliases: set[str] = set()
+
+    for select in tree.find_all(exp.Select):
+
+        for projection in select.expressions:
+
+            alias = projection.alias
+
+            if alias:
+                select_aliases.add(
+                    alias.lower()
+                )
+
+    # --------------------------------------------------------
     # 3. Validate column references
     # --------------------------------------------------------
 
@@ -432,6 +463,11 @@ def validate_columns(
         ):
             continue
 
+        # SELECT aliases are valid references in
+        # GROUP BY / ORDER BY / HAVING clauses.
+        if column_name_lower in select_aliases:
+            continue
+
         # Check whether the column belongs to
         # a CTE used by the query.
 
@@ -439,6 +475,7 @@ def validate_columns(
             column_name_lower in columns
             for columns in cte_columns.values()
         ):
+
             continue
 
         invalid_columns.append(

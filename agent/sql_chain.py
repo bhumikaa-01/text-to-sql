@@ -52,7 +52,7 @@ from model.schema import Base, QueryLog
 from agent.schema_validator import validate_sql_schema
 from agent.query_guard import check_query_resources
 from agent.confidence import calculate_confidence
-
+from agent.semantic_evaluator import evaluate_semantics
 
 load_dotenv()
 
@@ -69,7 +69,7 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     global _llm
     if _llm is None:
         _llm = ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+            model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
             temperature=0,
             google_api_key=os.getenv("GOOGLE_API_KEY", ""),
         )
@@ -764,6 +764,61 @@ async def run_query(
         )
 
         # ====================================================
+        # STEP — Semantic evaluation
+        # ====================================================
+
+        try:
+
+            semantic_evaluation = evaluate_semantics(
+                question=question,
+                generated_sql=generated_sql,
+                results=results,
+            )
+
+            logger.info(
+                "Semantic evaluation: correct=%s score=%.2f issues=%s",
+                semantic_evaluation["is_correct"],
+                semantic_evaluation["score"],
+                semantic_evaluation["issues"],
+            )
+
+        except Exception as exc:
+
+            logger.warning(
+                "Semantic evaluation unavailable: %s",
+                exc,
+            )
+
+            semantic_evaluation = {
+                "is_correct": None,
+                "score": None,
+                "reason": (
+                    "Semantic evaluation was temporarily unavailable."
+                ),
+                "issues": [
+                    "SEMANTIC_EVALUATION_UNAVAILABLE",
+                ],
+            }
+
+
+        # ====================================================
+        # STEP — Result quality
+        # ====================================================
+
+        if semantic_evaluation["score"] is not None:
+
+            result_quality = (
+                semantic_evaluation["score"]
+                * 100.0
+            )
+
+        else:
+
+            # Semantic correctness is unknown.
+            # Do not falsely award full result-quality points.
+            result_quality = 0.0
+
+        # ====================================================
         # STEP 15 — Calculate result quality
         # ====================================================
 
@@ -834,6 +889,8 @@ async def run_query(
                 "violations": resource_violations,
                 "reason": resource_reason,
             },
+
+            "semantic_evaluation": semantic_evaluation,
 
             "confidence": confidence,
 

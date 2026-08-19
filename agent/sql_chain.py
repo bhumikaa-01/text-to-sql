@@ -57,6 +57,11 @@ from agent.query_cache import (
     get_cached_response,
     set_cached_response,
 )
+from agent.sql_retry import (
+    MAX_SQL_RETRIES,
+    build_correction_prompt,
+    is_retryable_error,
+)
 
 load_dotenv()
 
@@ -548,25 +553,24 @@ async def run_query(
                 "error": safety_reason,
             }
 
-        # ====================================================
-        # STEP 11 — Schema validation
+                # ====================================================
+        # STEP 11 — Schema validation + automatic correction
         # ====================================================
 
-        is_valid, schema_error = (
-            validate_sql_schema(
+        retry_count = 0
+
+        while True:
+
+            # ------------------------------------------------
+            # Validate generated SQL against database schema.
+            # ------------------------------------------------
+
+            is_valid, schema_error = validate_sql_schema(
                 generated_sql
             )
-        )
 
-        if not is_valid:
-
-            latency_ms = int(
-                (
-                    time.monotonic()
-                    - start_time
-                )
-                * 1000
-            )
+            if is_valid:
+                break
 
             schema_reason = (
                 schema_error
@@ -574,49 +578,244 @@ async def run_query(
             )
 
             logger.warning(
-                "Schema validation failed: %s",
+                "Schema validation failed "
+                "(attempt %d/%d): %s",
+                retry_count + 1,
+                MAX_SQL_RETRIES + 1,
                 schema_reason,
             )
 
-            _log_query(
-                question,
+            # ------------------------------------------------
+            # Check whether this failure can be corrected.
+            # ------------------------------------------------
+
+            if (
+                not is_retryable_error(schema_reason)
+                or retry_count >= MAX_SQL_RETRIES
+            ):
+
+                latency_ms = int(
+                    (
+                        time.monotonic()
+                        - start_time
+                    )
+                    * 1000
+                )
+
+                _log_query(
+                    question,
+                    generated_sql,
+                    latency_ms,
+                    tables_used,
+                    error=schema_reason,
+                )
+
+                confidence = calculate_confidence(
+                    sql_safe=True,
+                    schema_valid=False,
+                    resource_decision="BLOCK",
+                    execution_success=False,
+                    result_quality=0,
+                    table_correct=False,
+                )
+
+                return {
+                    "sql": generated_sql,
+                    "results": [],
+                    "tables_used": tables_used,
+
+                    "requires_approval": False,
+                    "approval_reason": "",
+
+                    "resource_guard": {
+                        "decision": "BLOCK",
+                        "risk_level": "HIGH",
+                        "violations": [
+                            "SCHEMA_VALIDATION",
+                        ],
+                        "reason": schema_reason,
+                    },
+
+                    "confidence": confidence,
+
+                    "latency_ms": latency_ms,
+                    "error": schema_reason,
+                }
+
+            # ------------------------------------------------
+            # Automatic SQL correction
+            # ------------------------------------------------
+
+            retry_count += 1
+
+            logger.info(
+                "Attempting automatic SQL correction "
+                "(retry %d/%d)",
+                retry_count,
+                MAX_SQL_RETRIES,
+            )
+
+            correction_prompt = build_correction_prompt(
+                question=question,
+                previous_sql=generated_sql,
+                validation_error=schema_reason,
+                schema_context=schema_context,
+            )
+
+            try:
+
+                correction_response = await llm.ainvoke(
+                    correction_prompt
+                )
+
+                corrected_raw = (
+                    correction_response.content
+                    if hasattr(
+                        correction_response,
+                        "content",
+                    )
+                    else str(
+                        correction_response
+                    )
+                )
+
+                generated_sql = _extract_sql(
+                    corrected_raw
+                ).strip()
+
+            except Exception as exc:
+
+                logger.warning(
+                    "Automatic SQL correction failed: %s",
+                    exc,
+                )
+
+                latency_ms = int(
+                    (
+                        time.monotonic()
+                        - start_time
+                    )
+                    * 1000
+                )
+
+                _log_query(
+                    question,
+                    generated_sql,
+                    latency_ms,
+                    tables_used,
+                    error=str(exc),
+                )
+
+                confidence = calculate_confidence(
+                    sql_safe=True,
+                    schema_valid=False,
+                    resource_decision="BLOCK",
+                    execution_success=False,
+                    result_quality=0,
+                    table_correct=False,
+                )
+
+                return {
+                    "sql": generated_sql,
+                    "results": [],
+                    "tables_used": tables_used,
+
+                    "requires_approval": False,
+                    "approval_reason": "",
+
+                    "resource_guard": {
+                        "decision": "BLOCK",
+                        "risk_level": "HIGH",
+                        "violations": [
+                            "SQL_CORRECTION_FAILED",
+                        ],
+                        "reason": str(exc),
+                    },
+
+                    "confidence": confidence,
+
+                    "latency_ms": latency_ms,
+                    "error": str(exc),
+                }
+
+            logger.info(
+                "Corrected SQL:\n%s",
                 generated_sql,
-                latency_ms,
-                tables_used,
-                error=schema_reason,
             )
 
-            confidence = calculate_confidence(
-                sql_safe=True,
-                schema_valid=False,
-                resource_decision="BLOCK",
-                execution_success=False,
-                result_quality=0,
-                table_correct=False,
+            # ------------------------------------------------
+            # Re-run SQL safety after correction.
+            # ------------------------------------------------
+
+            corrected_safety = check_sql(
+                generated_sql
             )
 
-            return {
-                "sql": generated_sql,
-                "results": [],
-                "tables_used": tables_used,
+            if not corrected_safety.get(
+                "allowed",
+                False,
+            ):
 
-                "requires_approval": False,
-                "approval_reason": "",
+                safety_reason = corrected_safety.get(
+                    "reason",
+                    "Corrected SQL failed the safety policy.",
+                )
 
-                "resource_guard": {
-                    "decision": "BLOCK",
-                    "risk_level": "HIGH",
-                    "violations": [
-                        "SCHEMA_VALIDATION",
-                    ],
-                    "reason": schema_reason,
-                },
+                logger.warning(
+                    "Corrected SQL blocked by safety guard: %s",
+                    safety_reason,
+                )
 
-                "confidence": confidence,
+                latency_ms = int(
+                    (
+                        time.monotonic()
+                        - start_time
+                    )
+                    * 1000
+                )
 
-                "latency_ms": latency_ms,
-                "error": schema_reason,
-            }
+                return {
+                    "sql": generated_sql,
+                    "results": [],
+                    "tables_used": _extract_table_names(
+                        generated_sql
+                    ),
+
+                    "requires_approval": False,
+                    "approval_reason": "",
+
+                    "resource_guard": {
+                        "decision": "BLOCK",
+                        "risk_level": corrected_safety.get(
+                            "risk_level",
+                            "CRITICAL",
+                        ),
+                        "violations": [
+                            "SQL_SAFETY",
+                        ],
+                        "reason": safety_reason,
+                    },
+
+                    "confidence": calculate_confidence(
+                        sql_safe=False,
+                        schema_valid=False,
+                        resource_decision="BLOCK",
+                        execution_success=False,
+                        result_quality=0,
+                        table_correct=False,
+                    ),
+
+                    "latency_ms": latency_ms,
+                    "error": safety_reason,
+                }
+
+            # ------------------------------------------------
+            # Update referenced tables after correction.
+            # ------------------------------------------------
+
+            tables_used = _extract_table_names(
+                generated_sql
+            )
 
         # ====================================================
         # STEP 12 — Query resource guard
@@ -838,9 +1037,8 @@ async def run_query(
                 ],
             }
 
-
         # ====================================================
-        # STEP 15 — CaclResult quality
+        # STEP 15 — Calculate result quality
         # ====================================================
 
         if semantic_evaluation["score"] is not None:
@@ -852,10 +1050,7 @@ async def run_query(
 
         else:
 
-            # Semantic correctness is unknown.
-            # Do not falsely award full result-quality points.
             result_quality = 0.0
-
 
         # ====================================================
         # STEP 16 — Calculate confidence
@@ -912,7 +1107,7 @@ async def run_query(
             "semantic_evaluation": semantic_evaluation,
 
             "cache": {
-                    "hit": False,
+                "hit": False,
             },
 
             "requires_approval": False,

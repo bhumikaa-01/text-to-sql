@@ -4,6 +4,10 @@ from agent.query_cache import (
     set_cached_response,
 )
 
+from agent.query_cache import (
+    _make_cache_key,
+)
+
 
 def main() -> None:
 

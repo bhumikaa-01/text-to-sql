@@ -18,6 +18,7 @@ from unittest.mock import patch
 from langchain_core.runnables import RunnableLambda
 
 from agent.sql_chain import run_query
+from agent.query_cache import clear_cache
 
 
 async def test_semantic_evaluation_failure():
@@ -69,6 +70,10 @@ async def test_semantic_evaluation_failure():
         # ----------------------------------------------------
         # Run the REAL query pipeline.
         # ----------------------------------------------------
+
+        # Ensure the test exercises the real pipeline
+        # instead of returning a previously cached response.
+        clear_cache()
 
         result = await run_query(
             "What is the total revenue from delivered orders?"

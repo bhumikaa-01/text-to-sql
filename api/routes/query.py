@@ -59,7 +59,11 @@ class QueryResponse(BaseModel):
 
     resource_guard: dict[str, Any]
 
+    semantic_evaluation: dict[str, Any]
+
     confidence: dict[str, Any]
+
+    cache: dict[str, Any]
 
     latency_ms: int
 

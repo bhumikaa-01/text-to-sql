@@ -275,10 +275,24 @@ async def run_query(
 
     if cached_response is not None:
 
+        latency_ms = int(
+        (
+            time.monotonic()
+            - start_time
+        )
+        * 1000
+        )
+
         logger.info(
             "Query cache HIT for question: %s",
             question,
         )
+
+        cached_response["cache"] = {
+            "hit": True,
+        }
+
+        cached_response["latency_ms"] = latency_ms
 
         return cached_response
 
@@ -826,7 +840,7 @@ async def run_query(
 
 
         # ====================================================
-        # STEP — Result quality
+        # STEP 15 — CaclResult quality
         # ====================================================
 
         if semantic_evaluation["score"] is not None:
@@ -842,15 +856,6 @@ async def run_query(
             # Do not falsely award full result-quality points.
             result_quality = 0.0
 
-        # ====================================================
-        # STEP 15 — Calculate result quality
-        # ====================================================
-
-        result_quality = (
-            100.0
-            if results
-            else 70.0
-        )
 
         # ====================================================
         # STEP 16 — Calculate confidence
@@ -903,6 +908,12 @@ async def run_query(
             "sql": generated_sql,
             "results": results,
             "tables_used": tables_used,
+
+            "semantic_evaluation": semantic_evaluation,
+
+            "cache": {
+                    "hit": False,
+            },
 
             "requires_approval": False,
             "approval_reason": "",

@@ -25,6 +25,8 @@ CACHE_DB = os.getenv(
     str(PROJECT_ROOT / "data" / "query_cache.db"),
 )
 
+CACHE_VERSION = "v1"
+
 DEFAULT_TTL_SECONDS = 1800  # 30 minutes
 
 
@@ -37,12 +39,16 @@ def _normalize_question(question: str) -> str:
 
 
 def _make_cache_key(question: str) -> str:
-    """Create a deterministic SHA-256 cache key."""
+    """Create a versioned deterministic SHA-256 cache key."""
 
     normalized = _normalize_question(question)
 
+    key_material = (
+        f"{CACHE_VERSION}:{normalized}"
+    )
+
     return hashlib.sha256(
-        normalized.encode("utf-8")
+        key_material.encode("utf-8")
     ).hexdigest()
 
 

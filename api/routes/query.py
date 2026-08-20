@@ -61,6 +61,8 @@ class QueryResponse(BaseModel):
 
     semantic_evaluation: dict[str, Any]
 
+    visualization: dict[str, Any] = {}
+
     confidence: dict[str, Any]
 
     cache: dict[str, Any]

@@ -62,6 +62,12 @@ from agent.sql_retry import (
     build_correction_prompt,
     is_retryable_error,
 )
+from agent.result_visualizer import (
+    recommend_visualization,
+)
+from agent.chart_renderer import (
+    render_chart,
+)
 
 load_dotenv()
 
@@ -1096,7 +1102,33 @@ async def run_query(
         )
 
         # ====================================================
-        # STEP 19 — Successful response
+        # STEP 19 — Result visualization recommendation
+        # ====================================================
+
+        visualization = recommend_visualization(
+            results
+        )
+
+        logger.info(
+            "Visualization recommendation: "
+            "recommended=%s chart_type=%s",
+            visualization["recommended"],
+            visualization["chart_type"],
+        )
+
+        chart = render_chart(
+            results,
+            visualization,
+        )
+
+        logger.info(
+            "Chart rendering: rendered=%s type=%s",
+            chart["rendered"],
+            chart.get("chart_type"),
+        )
+
+        # ====================================================
+        # STEP 20 — Successful response
         # ====================================================
 
         response = {
@@ -1106,6 +1138,11 @@ async def run_query(
 
             "semantic_evaluation": semantic_evaluation,
 
+            "visualization": {
+                **visualization,
+                "chart": chart,
+            },
+            
             "cache": {
                 "hit": False,
             },

@@ -25,7 +25,7 @@ CACHE_DB = os.getenv(
     str(PROJECT_ROOT / "data" / "query_cache.db"),
 )
 
-CACHE_VERSION = "v1"
+CACHE_VERSION = "v2"
 
 DEFAULT_TTL_SECONDS = 1800  # 30 minutes
 

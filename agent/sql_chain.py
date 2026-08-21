@@ -53,6 +53,7 @@ from agent.schema_validator import validate_sql_schema
 from agent.query_guard import check_query_resources
 from agent.confidence import calculate_confidence
 from agent.semantic_evaluator import evaluate_semantics
+from agent.query_explainer import explain_query
 from agent.query_cache import (
     get_cached_response,
     set_cached_response,
@@ -1102,7 +1103,23 @@ async def run_query(
         )
 
         # ====================================================
-        # STEP 19 — Result visualization recommendation
+        # STEP 19 — Query explanation
+        # ====================================================
+
+        explanation = await explain_query(
+            question=question,
+            sql=generated_sql,
+            tables_used=tables_used,
+            llm=_get_llm(),
+        )
+
+        logger.info(
+            "Query explanation generated: %s",
+            explanation["summary"],
+        )
+
+        # ====================================================
+        # STEP 20 — Result visualization recommendation
         # ====================================================
 
         visualization = recommend_visualization(
@@ -1137,6 +1154,8 @@ async def run_query(
             "tables_used": tables_used,
 
             "semantic_evaluation": semantic_evaluation,
+
+            "explanation": explanation,
 
             "visualization": {
                 **visualization,

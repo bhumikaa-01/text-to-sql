@@ -112,6 +112,29 @@ def test_resource_block():
     assert result["score"] == 0.0
     assert result["level"] == "LOW"
 
+def test_table_incorrectness():
+
+    result = calculate_confidence(
+        sql_safe=True,
+        schema_valid=True,
+        resource_decision="ALLOW",
+        execution_success=True,
+        result_quality=100,
+        table_correct=False,
+    )
+
+    print()
+    print("=" * 70)
+    print("TABLE INCORRECTNESS")
+    print("=" * 70)
+    print(result)
+
+    assert result["score"] == 90.0
+    assert result["level"] == "HIGH"
+    assert result["factors"]["table_correctness"] == 0.0
+
+    print("Incorrect table confidence: PASS")
+
 
 if __name__ == "__main__":
 

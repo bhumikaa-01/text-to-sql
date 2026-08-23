@@ -46,12 +46,14 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from sqlalchemy import text
 
 from agent.hitl_guard import check_sql
+from agent.input_guard import check_user_input
 from agent.retriever import get_relevant_schema
 from model.database import get_engine, get_session
 from model.schema import Base, QueryLog
 from agent.schema_validator import validate_sql_schema
 from agent.query_guard import check_query_resources
 from agent.confidence import calculate_confidence
+from agent.table_correctness import check_table_correctness
 from agent.semantic_evaluator import evaluate_semantics
 from agent.query_explainer import explain_query
 from agent.query_cache import (
@@ -242,7 +244,6 @@ def _execute_sql(sql: str) -> list[dict[str, Any]]:
         rows = result.fetchall()
         return [dict(zip(columns, row)) for row in rows]
 
-
 async def run_query(
     question: str,
 ) -> dict[str, Any]:
@@ -276,6 +277,76 @@ async def run_query(
             ↓
         Structured response
     """
+
+    # ====================================================
+    # STEP 0 — USER INPUT SECURITY GUARD
+    # ====================================================
+
+    input_guard = check_user_input(question)
+
+    logger.info(
+        "User input security check: allowed=%s risk=%s operation=%s",
+        input_guard["allowed"],
+        input_guard["risk_level"],
+        input_guard["operation"],
+    )
+
+    if not input_guard["allowed"]:
+
+        logger.warning(
+            "User input blocked by security guard: %s",
+            input_guard["reason"],
+        )
+
+        return {
+        "sql": "",
+        "results": [],
+        "tables_used": [],
+
+        "requires_approval": False,
+        "approval_reason": "",
+
+        "resource_guard": {
+            "decision": "BLOCK",
+            "risk_level": input_guard["risk_level"],
+            "violations": [
+                "USER_INPUT_SECURITY",
+                *input_guard.get("violations", []),
+            ],
+            "reason": input_guard["reason"],
+        },
+
+        "semantic_evaluation": {},
+
+        "explanation": {},
+
+        "visualization": {},
+
+        "confidence": {
+            "score": 0,
+            "level": "LOW",
+            "factors": {
+                "sql_safety": 0,
+                "schema_validity": 0,
+                "resource_safety": 0,
+                "execution": 0,
+                "result_quality": 0,
+                "table_correctness": 0,
+            },
+        },
+
+        "cache": {
+            "hit": False,
+        },
+
+        "latency_ms": 0,
+
+        "error": (
+            "Request blocked by the security guard. "
+            "The input contains a potentially dangerous "
+            "SQL operation or injection pattern."
+        ),
+    }
 
     start_time = time.monotonic()
 
@@ -454,7 +525,47 @@ async def run_query(
                     ),
                 },
 
+                "semantic_evaluation": {
+                    "is_correct": False,
+                    "score": 0.0,
+                    "reason": (
+                        "Semantic evaluation was skipped because "
+                        "the model returned empty SQL."
+                    ),
+                    "issues": [
+                        "EMPTY_SQL",
+                    ],
+                },
+
+                "explanation": {
+                    "summary": (
+                        "No executable SQL was generated for "
+                        "the requested question."
+                    ),
+                    "tables_used": [],
+                    "operation_count": 0,
+                },
+
+                "visualization": {
+                    "recommended": False,
+                    "chart_type": None,
+                    "x_axis": None,
+                    "y_axis": None,
+                    "reason": (
+                        "No visualization is generated because "
+                        "no SQL was executed."
+                    ),
+                    "chart": {
+                        "rendered": False,
+                        "chart_type": None,
+                    },
+                },
+
                 "confidence": confidence,
+
+                "cache": {
+                    "hit": False,
+                },
 
                 "latency_ms": latency_ms,
 
@@ -979,13 +1090,22 @@ async def run_query(
                 error=None,
             )
 
+            confidence = calculate_confidence(
+                sql_safe=False,
+                schema_valid=True,
+                resource_decision=resource_decision,
+                execution_success=False,
+                result_quality=0,
+                table_correct=False,
+            )
+
             return {
                 "sql": generated_sql,
                 "results": [],
                 "tables_used": tables_used,
 
-                "requires_approval": True,
-                "approval_reason": approval_reason,
+                "requires_approval": False,
+                "approval_reason": "",
 
                 "resource_guard": {
                     "decision": resource_decision,
@@ -994,8 +1114,50 @@ async def run_query(
                     "reason": resource_reason,
                 },
 
+                "semantic_evaluation": {
+                    "is_correct": False,
+                    "score": 0.0,
+                    "reason": (
+                        "Semantic evaluation was skipped because "
+                        "the query was blocked by the resource guard."
+                    ),
+                    "issues": [
+                        "RESOURCE_GUARD_BLOCKED",
+                    ],
+                },
+
+                "explanation": {
+                    "summary": (
+                        "The query was blocked by the resource "
+                        "governance guard before execution."
+                    ),
+                    "tables_used": tables_used,
+                    "operation_count": 0,
+                },
+
+                "visualization": {
+                    "recommended": False,
+                    "chart_type": None,
+                    "x_axis": None,
+                    "y_axis": None,
+                    "reason": (
+                        "No visualization is generated for "
+                        "a blocked query."
+                    ),
+                    "chart": {
+                        "rendered": False,
+                        "chart_type": None,
+                    },
+                },
+
+                "confidence": confidence,
+
+                "cache": {
+                    "hit": False,
+                },
+
                 "latency_ms": latency_ms,
-                "error": "",
+                "error": resource_reason,
             }
 
         # ====================================================
@@ -1060,7 +1222,45 @@ async def run_query(
             result_quality = 0.0
 
         # ====================================================
-        # STEP 16 — Calculate confidence
+        # STEP 16 — Deterministic table correctness
+        # ====================================================
+
+        try:
+
+            table_correctness = check_table_correctness(
+                sql=generated_sql,
+            )
+
+            table_correct = table_correctness["table_correct"]
+
+            logger.info(
+                "Table correctness: correct=%s tables=%s",
+                table_correct,
+                table_correctness.get("tables_used"),
+            )
+
+        except Exception as exc:
+
+            logger.warning(
+                "Table correctness verification unavailable: %s",
+                exc,
+            )
+
+            table_correctness = {
+                "table_correct": None,
+                "tables_used": [],
+                "invalid_tables": [],
+                "invalid_columns": [],
+                "issues": [
+                    "TABLE_CORRECTNESS_UNAVAILABLE",
+                ],
+            }
+
+            table_correct = None
+
+
+        # ====================================================
+        # STEP 17 — Calculate confidence
         # ====================================================
 
         confidence = calculate_confidence(
@@ -1069,13 +1269,13 @@ async def run_query(
             resource_decision=resource_decision,
             execution_success=True,
             result_quality=result_quality,
-            table_correct=None,
+            table_correct=table_correct,
         )
 
         logger.info(
             "Confidence score: %.2f (%s)",
-            confidence["score"],
-            confidence["level"],
+             confidence["score"],
+             confidence["level"],
         )
 
         # ====================================================

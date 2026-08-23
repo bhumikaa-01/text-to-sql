@@ -21,6 +21,7 @@ Important:
 import logging
 import re
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +36,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bINSERT\s+INTO\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "INSERT",
         "CRITICAL",
@@ -45,7 +46,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bUPDATE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "UPDATE",
         "CRITICAL",
@@ -55,7 +56,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bDELETE\s+FROM\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "DELETE",
         "CRITICAL",
@@ -65,7 +66,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bDROP\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "DROP",
         "CRITICAL",
@@ -75,7 +76,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bTRUNCATE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "TRUNCATE",
         "CRITICAL",
@@ -85,7 +86,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bALTER\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "ALTER",
         "CRITICAL",
@@ -95,7 +96,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bCREATE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "CREATE",
         "CRITICAL",
@@ -105,7 +106,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bGRANT\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "GRANT",
         "CRITICAL",
@@ -115,7 +116,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bREVOKE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "REVOKE",
         "CRITICAL",
@@ -125,7 +126,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bATTACH\s+DATABASE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "ATTACH",
         "CRITICAL",
@@ -135,7 +136,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bDETACH\s+DATABASE\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "DETACH",
         "CRITICAL",
@@ -145,7 +146,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bPRAGMA\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "PRAGMA",
         "HIGH",
@@ -155,7 +156,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bVACUUM\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "VACUUM",
         "HIGH",
@@ -165,7 +166,7 @@ _DANGEROUS_PATTERNS: list[
     (
         re.compile(
             r"\bREINDEX\b",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "REINDEX",
         "HIGH",
@@ -185,7 +186,7 @@ _INJECTION_PATTERNS: list[
     (
         re.compile(
             r";\s*--",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "Possible SQL injection comment terminator detected.",
     ),
@@ -193,7 +194,7 @@ _INJECTION_PATTERNS: list[
     (
         re.compile(
             r";\s*/\*",
-            re.IGNORECASE
+            re.IGNORECASE,
         ),
         "Possible SQL injection block comment detected.",
     ),
@@ -219,7 +220,7 @@ def _base_result() -> dict:
 
 
 def _normalize_sql(
-    sql: str
+    sql: str,
 ) -> str:
     """
     Normalize whitespace while preserving SQL semantics.
@@ -228,8 +229,43 @@ def _normalize_sql(
     return re.sub(
         r"\s+",
         " ",
-        sql.strip()
+        sql.strip(),
     )
+
+
+def _remove_sql_comments(
+    sql: str,
+) -> str:
+    """
+    Remove SQL comments before operation detection.
+
+    This prevents natural-language model refusals such as:
+
+        -- I cannot generate DELETE statements.
+
+        -- INSERT, UPDATE, DELETE, or DROP are forbidden.
+
+    from being interpreted as executable SQL operations.
+
+    The actual SQL statement is still validated separately.
+    """
+
+    # Remove single-line SQL comments.
+    sql = re.sub(
+        r"--[^\n]*",
+        " ",
+        sql,
+    )
+
+    # Remove block SQL comments.
+    sql = re.sub(
+        r"/\*.*?\*/",
+        " ",
+        sql,
+        flags=re.DOTALL,
+    )
+
+    return sql
 
 
 # ============================================================
@@ -237,7 +273,7 @@ def _normalize_sql(
 # ============================================================
 
 def check_sql(
-    sql: str
+    sql: str,
 ) -> dict:
     """
     Perform deterministic safety checks on generated SQL.
@@ -255,6 +291,10 @@ def check_sql(
     The guard never raises for normal validation failures.
     """
 
+    # --------------------------------------------------------
+    # 0. Empty SQL
+    # --------------------------------------------------------
+
     if not sql or not sql.strip():
 
         return {
@@ -267,6 +307,17 @@ def check_sql(
 
     normalized_sql = _normalize_sql(
         sql
+    )
+
+    # Keep the original normalized SQL for statement/type
+    # validation, but remove comments for operation detection.
+    sql_for_operation_detection = _remove_sql_comments(
+        normalized_sql
+    )
+
+    # Normalize whitespace again after removing comments.
+    sql_for_operation_detection = _normalize_sql(
+        sql_for_operation_detection
     )
 
     # --------------------------------------------------------
@@ -307,7 +358,7 @@ def check_sql(
     ) in _DANGEROUS_PATTERNS:
 
         if pattern.search(
-            normalized_sql
+            sql_for_operation_detection
         ):
 
             logger.warning(
@@ -328,9 +379,7 @@ def check_sql(
     # 3. Injection / comment detection
     # --------------------------------------------------------
 
-    for pattern, reason in (
-        _INJECTION_PATTERNS
-    ):
+    for pattern, reason in _INJECTION_PATTERNS:
 
         if pattern.search(
             normalized_sql
@@ -353,10 +402,42 @@ def check_sql(
     # 4. Statement type validation
     # --------------------------------------------------------
 
+    # Only SELECT and WITH are allowed.
+    #
+    # IMPORTANT:
+    # We validate the comment-stripped SQL here.
+    #
+    # Example:
+    #
+    #   -- I cannot generate DELETE statements.
+    #
+    # becomes empty after comment removal and therefore
+    # gets rejected as UNSUPPORTED instead of being detected
+    # as an UPDATE/DELETE operation.
+    #
+
+    executable_sql = sql_for_operation_detection.strip()
+
+    if not executable_sql:
+
+        logger.warning(
+            "SQL guard blocked SQL containing no executable statement."
+        )
+
+        return {
+            "allowed": False,
+            "requires_approval": False,
+            "risk_level": "HIGH",
+            "operation": "EMPTY",
+            "reason": (
+                "No executable SQL statement was generated."
+            ),
+        }
+
     if not re.match(
         r"^(SELECT|WITH)\b",
-        normalized_sql,
-        re.IGNORECASE
+        executable_sql,
+        re.IGNORECASE,
     ):
 
         logger.warning(

@@ -1,342 +1,618 @@
-"""
-test_semantic_evaluator.py
+import json
+from unittest.mock import patch
 
-Unit tests for the semantic evaluator.
+import pytest
 
-These tests DO NOT call the Gemini API.
-Gemini responses are mocked so that testing is:
-    - deterministic
-    - fast
-    - free
-    - repeatable
-"""
-
-from unittest.mock import patch, MagicMock
-
-from agent.semantic_evaluator import evaluate_semantics
-
-
-def _mock_gemini_response(response_text: str):
-    """
-    Build a fake Gemini response.
-    """
-
-    response = MagicMock()
-    response.text = response_text
-
-    return response
+from agent.semantic_evaluator import (
+    _build_prompt,
+    _parse_response,
+    evaluate_semantics,
+)
 
 
 # ============================================================
-# CORRECT REVENUE QUERY
+# TEST DATA
 # ============================================================
 
-def test_correct_revenue_query():
+QUESTION = "How many orders were cancelled?"
 
-    fake_response = _mock_gemini_response(
-        """
-        {
-            "is_correct": true,
-            "score": 1.0,
-            "reason": "The SQL correctly calculates completed revenue.",
-            "issues": []
-        }
-        """
+GENERATED_SQL = """
+SELECT COUNT(DISTINCT fo.order_id) AS canceled_orders_count
+FROM fact_orders fo
+WHERE fo.order_status = 'canceled';
+"""
+
+RESULTS = [
+    {
+        "canceled_orders_count": 625
+    }
+]
+
+
+# ============================================================
+# TEST 1 — Prompt generation
+# ============================================================
+
+
+def test_prompt_contains_required_context():
+
+    prompt = _build_prompt(
+        question=QUESTION,
+        generated_sql=GENERATED_SQL,
+        results=RESULTS,
     )
 
-    with patch(
-        "agent.semantic_evaluator._client.models.generate_content",
-        return_value=fake_response,
-    ):
+    assert QUESTION in prompt
 
-        result = evaluate_semantics(
-            question="What is the total revenue?",
-            generated_sql="""
-                SELECT
-                    SUM(order_total_usd) AS total_revenue
-                FROM fact_orders
-                WHERE order_status = 'delivered'
-            """,
-            results=[
-                {
-                    "total_revenue": 2644299.62
-                }
-            ],
-        )
+    print("Question included: PASS")
 
-    print()
-    print("=" * 70)
-    print("CORRECT REVENUE QUERY")
-    print("=" * 70)
-    print(result)
+    assert GENERATED_SQL in prompt
+
+    print("Generated SQL included: PASS")
+
+    assert "625" in prompt
+
+    print("Actual result included: PASS")
+
+    assert "SEMANTIC SCHEMA" in prompt
+
+    print("Semantic schema included: PASS")
+
+    assert "Do NOT execute SQL." in prompt
+
+    print("Evaluator constraints included: PASS")
+
+
+# ============================================================
+# TEST 2 — Valid JSON response parsing
+# ============================================================
+
+
+def test_parse_valid_response():
+
+    response = json.dumps(
+        {
+            "is_correct": True,
+            "score": 0.95,
+            "reason": "The SQL correctly counts cancelled orders.",
+            "issues": [],
+        }
+    )
+
+    result = _parse_response(response)
 
     assert result["is_correct"] is True
-    assert result["score"] == 1.0
+
+    print("is_correct parsing: PASS")
+
+    assert result["score"] == 0.95
+
+    print("Score parsing: PASS")
+
+    assert (
+        result["reason"]
+        == "The SQL correctly counts cancelled orders."
+    )
+
+    print("Reason parsing: PASS")
+
     assert result["issues"] == []
 
-
-# ============================================================
-# INCORRECT REVENUE QUERY
-# ============================================================
-
-def test_incorrect_revenue_query():
-
-    fake_response = _mock_gemini_response(
-        """
-        {
-            "is_correct": false,
-            "score": 0.0,
-            "reason": "The SQL calculates average shipping cost instead of total revenue.",
-            "issues": [
-                "Incorrect column",
-                "Incorrect aggregation"
-            ]
-        }
-        """
-    )
-
-    with patch(
-        "agent.semantic_evaluator._client.models.generate_content",
-        return_value=fake_response,
-    ):
-
-        result = evaluate_semantics(
-            question="What is the total revenue?",
-            generated_sql="""
-                SELECT
-                    AVG(freight_value_usd) AS average_shipping
-                FROM fact_orders
-            """,
-            results=[
-                {
-                    "average_shipping": 18.42
-                }
-            ],
-        )
-
-    print()
-    print("=" * 70)
-    print("INCORRECT REVENUE QUERY")
-    print("=" * 70)
-    print(result)
-
-    assert result["is_correct"] is False
-    assert result["score"] == 0.0
-    assert len(result["issues"]) > 0
+    print("Issues parsing: PASS")
 
 
 # ============================================================
-# MONTHLY REVENUE QUERY
+# TEST 3 — Markdown fenced JSON
 # ============================================================
+def test_parse_markdown_json():
 
-def test_monthly_revenue_query():
+    response = """
+```json
+{
+    "is_correct": true,
+    "score": 0.9,
+    "reason": "Correct query.",
+    "issues": []
+}
 
-    fake_response = _mock_gemini_response(
-        """
-        {
-            "is_correct": true,
-            "score": 1.0,
-            "reason": "The SQL correctly calculates completed revenue by month.",
-            "issues": []
-        }
-        """
-    )
+"""
 
-    with patch(
-        "agent.semantic_evaluator._client.models.generate_content",
-        return_value=fake_response,
-    ):
-
-        result = evaluate_semantics(
-            question="Show completed revenue by month.",
-            generated_sql="""
-                SELECT
-                    strftime('%Y-%m', created_at) AS month,
-                    SUM(order_total_usd) AS revenue
-                FROM fact_orders
-                WHERE order_status = 'delivered'
-                GROUP BY strftime(
-                    '%Y-%m',
-                    created_at
-                )
-            """,
-            results=[
-                {
-                    "month": "2026-01",
-                    "revenue": 120000.0,
-                },
-                {
-                    "month": "2026-02",
-                    "revenue": 135000.0,
-                },
-            ],
-        )
-
-    print()
-    print("=" * 70)
-    print("MONTHLY REVENUE QUERY")
-    print("=" * 70)
-    print(result)
+    result = _parse_response(response)
 
     assert result["is_correct"] is True
+
+    print("Markdown JSON parsing: PASS")
+
+    assert result["score"] == 0.9
+
+    print("Markdown score parsing: PASS")
+# ============================================================
+# TEST 4 — Score normalization
+# ============================================================
+
+def test_score_normalization():
+
+    response = json.dumps(
+    {
+        "is_correct": True,
+        "score": 5,
+        "reason": "High score.",
+        "issues": [],
+    }
+)
+
+    result = _parse_response(response)
+
     assert result["score"] == 1.0
 
+    print("Upper score normalization: PASS")
 
-# ============================================================
-# RESPONSE STRUCTURE
-# ============================================================
-
-def test_evaluator_response_structure():
-
-    fake_response = _mock_gemini_response(
-        """
+    response = json.dumps(
         {
-            "is_correct": false,
-            "score": 0.4,
-            "reason": "COUNT(*) counts order-item events.",
-            "issues": [
-                "COUNT(DISTINCT order_id) should be used."
-            ]
-        }
-        """
+        "is_correct": False,
+        "score": -2,
+        "reason": "Low score.",
+        "issues": [
+            "Wrong aggregation"
+        ],
+    }
+)
+
+    result = _parse_response(response)
+
+    assert result["score"] == 0.0
+
+    print("Lower score normalization: PASS")
+#============================================================
+#TEST 5 — Missing required field
+#============================================================
+
+def test_parse_missing_field():
+
+    response = json.dumps(
+    {
+        "is_correct": True,
+        "score": 0.9,
+        "reason": "Correct query.",
+    }
+)
+
+    with pytest.raises(ValueError):
+
+        _parse_response(response)
+
+    print("Missing field validation: PASS")
+#============================================================
+#TEST 6 — Invalid JSON
+#============================================================
+
+def test_parse_invalid_json():
+
+    response = """
+{
+    this is not valid json
+}
+"""
+
+    with pytest.raises(ValueError):
+
+        _parse_response(response)
+
+    print("Invalid JSON validation: PASS")
+#============================================================
+#TEST 7 — Invalid is_correct type
+#============================================================
+
+def test_invalid_is_correct_type():
+
+    response = json.dumps(
+    {
+        "is_correct": "true",
+        "score": 0.9,
+        "reason": "Correct query.",
+        "issues": [],
+    }
+)
+
+    with pytest.raises(ValueError):
+
+        _parse_response(response)
+
+    print("is_correct type validation: PASS")
+#============================================================
+#TEST 8 — Invalid issues type
+#============================================================
+
+def test_invalid_issues_type():
+
+    response = json.dumps(
+    {
+        "is_correct": True,
+        "score": 0.9,
+        "reason": "Correct query.",
+        "issues": "none",
+    }
+)
+
+    with pytest.raises(ValueError):
+
+        _parse_response(response)
+
+    print("Issues type validation: PASS")
+#============================================================
+#TEST 9 — Empty question
+#============================================================
+
+def test_empty_question():
+
+    with pytest.raises(ValueError):
+
+        evaluate_semantics(
+        question="",
+        generated_sql=GENERATED_SQL,
+        results=RESULTS,
     )
 
-    with patch(
-        "agent.semantic_evaluator._client.models.generate_content",
-        return_value=fake_response,
-    ):
-
-        result = evaluate_semantics(
-            question="How many orders are there?",
-            generated_sql="""
-                SELECT COUNT(*)
-                FROM fact_orders
-            """,
-            results=[
-                {
-                    "count": 100
-                }
-            ],
-        )
-
-    print()
-    print("=" * 70)
-    print("RESPONSE STRUCTURE")
-    print("=" * 70)
-    print(result)
-
-    assert "is_correct" in result
-    assert "score" in result
-    assert "reason" in result
-    assert "issues" in result
-
-    assert isinstance(
-        result["is_correct"],
-        bool,
-    )
-
-    assert isinstance(
-        result["score"],
-        float,
-    )
-
-    assert isinstance(
-        result["reason"],
-        str,
-    )
-
-    assert isinstance(
-        result["issues"],
-        list,
-    )
-
-
-# ============================================================
-# INVALID JSON RESPONSE
-# ============================================================
-
-def test_invalid_json_response():
-
-    fake_response = _mock_gemini_response(
-        "This is not valid JSON."
-    )
-
-    with patch(
-        "agent.semantic_evaluator._client.models.generate_content",
-        return_value=fake_response,
-    ):
-
-        try:
-
-            evaluate_semantics(
-                question="What is the total revenue?",
-                generated_sql="""
-                    SELECT SUM(order_total_usd)
-                    FROM fact_orders
-                """,
-                results=[
-                    {
-                        "total_revenue": 1000
-                    }
-                ],
-            )
-
-        except ValueError as exc:
-
-            assert (
-                "invalid JSON"
-                in str(exc)
-            )
-
-        else:
-
-            raise AssertionError(
-                "Expected ValueError for invalid JSON."
-            )
-
-
-# ============================================================
-# EMPTY SQL
-# ============================================================
+print("Empty question validation: PASS")
+#============================================================
+#TEST 10 — Empty SQL
+#============================================================
 
 def test_empty_sql():
 
     result = evaluate_semantics(
-        question="What is the total revenue?",
-        generated_sql="",
-        results=[],
-    )
-
-    print()
-    print("=" * 70)
-    print("EMPTY SQL")
-    print("=" * 70)
-    print(result)
+    question=QUESTION,
+    generated_sql="",
+    results=RESULTS,
+)
 
     assert result["is_correct"] is False
+
+    print("Empty SQL correctness: PASS")
+
     assert result["score"] == 0.0
+
+    print("Empty SQL score: PASS")
+
     assert "EMPTY_SQL" in result["issues"]
 
+    print("Empty SQL issue: PASS")
+#============================================================
+#TEST 11 — Successful evaluator call
+#============================================================
+
+def test_successful_evaluation():
+
+    mock_response = type(
+    "MockResponse",
+    (),
+    {
+        "text": json.dumps(
+            {
+                "is_correct": True,
+                "score": 1.0,
+                "reason": (
+                    "The SQL correctly counts "
+                    "cancelled orders."
+                ),
+                "issues": [],
+            }
+        )
+    },
+)()
+
+    with patch(
+        "agent.semantic_evaluator._client.models.generate_content",
+        return_value=mock_response,
+    ) as mock_generate:
+
+        result = evaluate_semantics(
+            question=QUESTION,
+            generated_sql=GENERATED_SQL,
+            results=RESULTS,
+        )
+
+    assert result["is_correct"] is True
+
+    print("Successful evaluation: PASS")
+
+    assert result["score"] == 1.0
+
+    print("Successful evaluation score: PASS")
+
+    assert result["issues"] == []
+
+    print("Successful evaluation issues: PASS")
+
+    assert mock_generate.called
+
+    print("Gemini evaluator call: PASS")
+#============================================================
+#TEST 12 — Incorrect semantic evaluation
+#============================================================
+
+def test_incorrect_evaluation():
+
+    mock_response = type(
+    "MockResponse",
+    (),
+    {
+        "text": json.dumps(
+            {
+                "is_correct": False,
+                "score": 0.2,
+                "reason": (
+                    "The SQL calculates revenue "
+                    "instead of cancelled orders."
+                ),
+                "issues": [
+                    "WRONG_METRIC"
+                ],
+            }
+        )
+    },
+)()
+
+    with patch(
+        "agent.semantic_evaluator._client.models.generate_content",
+        return_value=mock_response,
+    ):
+
+        result = evaluate_semantics(
+            question=QUESTION,
+            generated_sql=GENERATED_SQL,
+            results=RESULTS,
+        )
+
+    assert result["is_correct"] is False
+
+    print("Incorrect evaluation detection: PASS")
+
+    assert result["score"] == 0.2
+
+    print("Incorrect evaluation score: PASS")
+
+    assert "WRONG_METRIC" in result["issues"]
+
+    print("Incorrect evaluation issue: PASS")
+#============================================================
+#TEST 13 — Empty evaluator response
+#============================================================
+
+def test_empty_evaluator_response():
+
+    mock_response = type(
+    "MockResponse",
+    (),
+    {
+        "text": ""
+    },
+)()
+
+    with patch(
+        "agent.semantic_evaluator._client.models.generate_content",
+        return_value=mock_response,
+    ):
+
+        with pytest.raises(ValueError):
+
+            evaluate_semantics(
+                question=QUESTION,
+                generated_sql=GENERATED_SQL,
+                results=RESULTS,
+            )
+
+            print("Empty evaluator response handling: PASS")
+#============================================================
+#TEST 14 — Evaluator returns invalid JSON
+#============================================================
+
+def test_evaluator_invalid_json_response():
+
+    mock_response = type(
+    "MockResponse",
+    (),
+    {
+        "text": "This is not valid JSON."
+    },
+)()
+
+    with patch(
+    "agent.semantic_evaluator._client.models.generate_content",
+    return_value=mock_response,
+    ):
+
+        with pytest.raises(ValueError):
+
+            evaluate_semantics(
+                question=QUESTION,
+                generated_sql=GENERATED_SQL,
+                results=RESULTS,
+            )
+
+            print("Invalid evaluator JSON handling: PASS")
 
 # ============================================================
-# RUN TESTS
+# TEST 15 — Realistic revenue evaluation
 # ============================================================
 
-if __name__ == "__main__":
+def test_revenue_evaluation():
 
-    test_correct_revenue_query()
+    question = (
+        "Which product categories generated "
+        "the highest total revenue?"
+    )
 
-    test_incorrect_revenue_query()
+    sql = """
+    SELECT dp.category_name,
+           ROUND(
+               SUM(fo.order_total_usd),
+               2
+           ) AS total_revenue
+    FROM fact_orders fo
+    JOIN dim_products dp
+        ON fo.product_id = dp.product_id
+    WHERE fo.order_status = 'delivered'
+    GROUP BY dp.category_name
+    ORDER BY total_revenue DESC
+    """
 
-    test_monthly_revenue_query()
+    results = [
+        {
+            "category_name": "health_beauty",
+            "total_revenue": 125000.50,
+        },
+        {
+            "category_name": "watches_gifts",
+            "total_revenue": 98000.25,
+        },
+    ]
 
-    test_evaluator_response_structure()
+    mock_response = type(
+        "MockResponse",
+        (),
+        {
+            "text": json.dumps(
+                {
+                    "is_correct": True,
+                    "score": 1.0,
+                    "reason": (
+                        "The SQL correctly calculates "
+                        "revenue by product category "
+                        "for delivered orders."
+                    ),
+                    "issues": [],
+                }
+            )
+        },
+    )()
 
-    test_invalid_json_response()
+    with patch(
+        "agent.semantic_evaluator._client.models.generate_content",
+        return_value=mock_response,
+    ):
 
-    test_empty_sql()
+        result = evaluate_semantics(
+            question=question,
+            generated_sql=sql,
+            results=results,
+        )
+
+    assert result["is_correct"] is True
+
+    print("Revenue semantic evaluation: PASS")
+
+    assert result["score"] == 1.0
+
+    print("Revenue semantic score: PASS")
+
+# ============================================================
+# TEST 16 — Wrong metric evaluation
+# ============================================================
+
+
+def test_wrong_metric_evaluation():
+
+    question = (
+        "Which product categories generated "
+        "the highest total revenue?"
+    )
+
+    sql = """
+    SELECT dp.category_name,
+           COUNT(DISTINCT fo.order_id) AS order_count
+    FROM fact_orders fo
+    JOIN dim_products dp
+        ON fo.product_id = dp.product_id
+    GROUP BY dp.category_name
+    ORDER BY order_count DESC
+    """
+
+    results = [
+        {
+            "category_name": "health_beauty",
+            "order_count": 5000,
+        }
+    ]
+
+    mock_response = type(
+        "MockResponse",
+        (),
+        {
+            "text": json.dumps(
+                {
+                    "is_correct": False,
+                    "score": 0.15,
+                    "reason": (
+                        "The query counts orders instead "
+                        "of calculating total revenue."
+                    ),
+                    "issues": [
+                        "WRONG_METRIC"
+                    ],
+                }
+            )
+        },
+    )()
+
+    with patch(
+        "agent.semantic_evaluator._client.models.generate_content",
+        return_value=mock_response,
+    ):
+
+        result = evaluate_semantics(
+            question=question,
+            generated_sql=sql,
+            results=results,
+        )
+
+    assert result["is_correct"] is False
+
+    print("Wrong metric detection: PASS")
+
+    assert "WRONG_METRIC" in result["issues"]
+
+    print("Wrong metric issue: PASS")
+
+#============================================================
+#MAIN
+#============================================================
+
+def main():
+
+    print("=" * 70)
+    print("SEMANTIC EVALUATOR TEST")
+    print("=" * 70)
+
+tests = [
+    test_prompt_contains_required_context,
+    test_parse_valid_response,
+    test_parse_markdown_json,
+    test_score_normalization,
+    test_parse_missing_field,
+    test_parse_invalid_json,
+    test_invalid_is_correct_type,
+    test_invalid_issues_type,
+    test_empty_question,
+    test_empty_sql,
+    test_successful_evaluation,
+    test_incorrect_evaluation,
+    test_empty_evaluator_response,
+    test_evaluator_invalid_json_response,
+    test_revenue_evaluation,
+    test_wrong_metric_evaluation,
+]
+
+for test in tests:
 
     print()
-    print("=" * 70)
-    print("ALL SEMANTIC EVALUATOR UNIT TESTS PASSED")
-    print("=" * 70)
+    print("-" * 70)
+    print(test.__name__)
+    print("-" * 70)
+
+    test()
+
+print()
+print("=" * 70)
+print("ALL SEMANTIC EVALUATOR TESTS PASSED")
+print("=" * 70)

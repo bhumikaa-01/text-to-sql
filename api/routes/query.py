@@ -57,19 +57,19 @@ class QueryResponse(BaseModel):
 
     approval_reason: str = ""
 
-    resource_guard: dict[str, Any]
+    resource_guard: dict[str, Any] = {}
 
-    semantic_evaluation: dict[str, Any]
+    semantic_evaluation: dict[str, Any] = {}
 
     explanation: dict[str, Any] = {}
 
     visualization: dict[str, Any] = {}
 
-    confidence: dict[str, Any]
+    confidence: dict[str, Any] = {}
 
-    cache: dict[str, Any]
+    cache: dict[str, Any] = {}
 
-    latency_ms: int
+    latency_ms: int = 0
 
     error: str = ""
 

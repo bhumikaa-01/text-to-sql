@@ -671,7 +671,7 @@ async def run_query(
                 "error": safety_reason,
             }
 
-                # ====================================================
+        # ====================================================
         # STEP 11 — Schema validation + automatic correction
         # ====================================================
 
@@ -688,6 +688,7 @@ async def run_query(
             )
 
             if is_valid:
+                schema_valid = True
                 break
 
             schema_reason = (
@@ -1164,10 +1165,78 @@ async def run_query(
         # STEP 14 — Execute SQL
         # ====================================================
 
-        results = await asyncio.to_thread(
-            _execute_sql,
-            generated_sql,
-        )
+        execution_success = False
+
+        try:
+
+            results = await asyncio.to_thread(
+                _execute_sql,
+                generated_sql,
+            )
+
+            execution_success = True
+
+            logger.info(
+                "SQL execution successful: rows=%d",
+                len(results),
+            )
+
+        except Exception as exc:
+
+            execution_success = False
+
+            logger.warning(
+                "SQL execution failed: %s",
+                exc,
+            )
+
+            latency_ms = int(
+            (
+                time.monotonic()
+                - start_time
+            )
+            * 1000
+            )
+
+            _log_query(
+                question,
+                generated_sql,
+                latency_ms,
+                tables_used,
+                error=str(exc),
+            )
+
+            confidence = calculate_confidence(
+                sql_safe=True,
+                schema_valid=True,
+                resource_decision=resource_decision,
+                execution_success=False,
+                result_quality=0,
+                table_correct=False,
+            )
+
+            return {
+                "sql": generated_sql,
+                "results": [],
+                "tables_used": tables_used,
+
+                "requires_approval": False,
+                "approval_reason": "",
+
+                "resource_guard": {
+                    "decision": resource_decision,
+                    "risk_level": "HIGH",
+                    "violations": [
+                        "SQL_EXECUTION",
+                    ],
+                    "reason": str(exc),
+                },
+
+                "confidence": confidence,
+
+                "latency_ms": latency_ms,
+                "error": str(exc),
+            }
 
         # ====================================================
         # STEP — Semantic evaluation
@@ -1258,28 +1327,26 @@ async def run_query(
 
             table_correct = None
 
-
         # ====================================================
         # STEP 17 — Calculate confidence
         # ====================================================
-
         confidence = calculate_confidence(
-            sql_safe=True,
-            schema_valid=True,
-            resource_decision=resource_decision,
-            execution_success=True,
-            result_quality=result_quality,
-            table_correct=table_correct,
+                sql_safe=True,
+                schema_valid=True,
+                resource_decision=resource_decision,
+                execution_success=execution_success,
+                result_quality=result_quality,
+                table_correct=table_correct,
         )
 
         logger.info(
             "Confidence score: %.2f (%s)",
-             confidence["score"],
-             confidence["level"],
+            confidence["score"],
+            confidence["level"],
         )
-
+        
         # ====================================================
-        # STEP 17 — Calculate latency
+        # STEP 18 — Calculate latency
         # ====================================================
 
         latency_ms = int(

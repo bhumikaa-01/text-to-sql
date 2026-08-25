@@ -1,3 +1,9 @@
+"""
+test_sql_retry.py
+
+Unit tests for SQL retry classification and correction helpers.
+"""
+
 from agent.sql_retry import (
     MAX_SQL_RETRIES,
     build_correction_prompt,
@@ -6,102 +12,219 @@ from agent.sql_retry import (
 )
 
 
-print("=" * 70)
-print("SQL RETRY UNIT TEST")
-print("=" * 70)
+# ============================================================
+# TEST 1 — Retryable schema errors
+# ============================================================
+
+def test_retryable_schema_errors():
+
+    errors = [
+        "unknown column: fo.customer_name",
+        "unknown table: fake_orders",
+        "no such column: fo.customer_name",
+        "no such table: fake_orders",
+        "schema validation failed",
+        "invalid sql generated",
+        "syntax error near SELECT",
+        "SQL parsing failed",
+        "parse error in generated SQL",
+    ]
+
+    for error in errors:
+
+        assert is_retryable_error(error) is True
+
+        print(
+            f"Retryable error PASS: {error}"
+        )
 
 
-# ------------------------------------------------------------
-# Retry configuration
-# ------------------------------------------------------------
+# ============================================================
+# TEST 2 — Non-retryable safety/resource errors
+# ============================================================
 
-assert MAX_SQL_RETRIES == 2
+def test_non_retryable_errors():
 
-print("MAX_SQL_RETRIES: PASS")
+    errors = [
+        "SQL safety violation",
+        "unsafe SQL detected",
+        "resource guard blocked query",
+        "excessive limit",
+        "excessive joins",
+        "excessive unions",
+        "permission denied",
+        "rate limit exceeded",
+        "HTTP 429",
+        "503 service unavailable",
+    ]
 
+    for error in errors:
 
-# ------------------------------------------------------------
-# Retryable errors
-# ------------------------------------------------------------
+        assert is_retryable_error(error) is False
 
-assert is_retryable_error(
-    "Unknown columns: revenue"
-)
-
-assert is_retryable_error(
-    "Unknown table: orders"
-)
-
-assert is_retryable_error(
-    "Schema validation failed"
-)
-
-assert is_retryable_error(
-    "SQL syntax error"
-)
-
-print("Retryable errors: PASS")
+        print(
+            f"Non-retryable error PASS: {error}"
+        )
 
 
-# ------------------------------------------------------------
-# Non-retryable errors
-# ------------------------------------------------------------
+# ============================================================
+# TEST 3 — Empty / None errors
+# ============================================================
 
-assert not is_retryable_error(
-    "SQL safety check failed"
-)
+def test_empty_errors():
 
-assert not is_retryable_error(
-    "Resource guard blocked query"
-)
+    assert is_retryable_error(None) is False
 
-assert not is_retryable_error(
-    "Gemini 503 Service Unavailable"
-)
+    assert is_retryable_error("") is False
 
-assert not is_retryable_error(
-    "429 RESOURCE_EXHAUSTED"
-)
+    assert is_retryable_error("   ") is False
 
-print("Non-retryable errors: PASS")
+    print("Empty error handling: PASS")
 
 
-# ------------------------------------------------------------
-# Correction prompt
-# ------------------------------------------------------------
+# ============================================================
+# TEST 4 — Case insensitive matching
+# ============================================================
 
-prompt = build_correction_prompt(
-    question="What is the total revenue?",
-    previous_sql="SELECT SUM(revenue) FROM fact_orders;",
-    validation_error="Unknown column: revenue",
-    schema_context="fact_orders(order_total_usd, order_status)",
-)
+def test_case_insensitive_matching():
 
-assert "What is the total revenue?" in prompt
-assert "SELECT SUM(revenue)" in prompt
-assert "Unknown column: revenue" in prompt
-assert "order_total_usd" in prompt
+    assert (
+        is_retryable_error(
+            "NO SUCH COLUMN: fo.customer_name"
+        )
+        is True
+    )
 
-print("Correction prompt: PASS")
+    assert (
+        is_retryable_error(
+            "SYNTAX ERROR near SELECT"
+        )
+        is True
+    )
 
+    assert (
+        is_retryable_error(
+            "RESOURCE GUARD BLOCKED"
+        )
+        is False
+    )
 
-# ------------------------------------------------------------
-# Retry metadata
-# ------------------------------------------------------------
-
-metadata = build_retry_metadata(
-    attempt=1,
-    error="Unknown column: revenue",
-)
-
-assert metadata["attempt"] == 1
-assert metadata["max_retries"] == 2
-assert metadata["retry_available"] is True
-
-print("Retry metadata: PASS")
+    print("Case-insensitive matching: PASS")
 
 
-print()
-print("=" * 70)
-print("ALL SQL RETRY UNIT TESTS PASSED")
-print("=" * 70)
+# ============================================================
+# TEST 5 — Retry metadata
+# ============================================================
+
+def test_retry_metadata():
+
+    metadata = build_retry_metadata(
+        attempt=1,
+        max_retries=MAX_SQL_RETRIES,
+        error="no such column: fo.customer_name",
+    )
+
+    assert metadata["attempt"] == 1
+
+    assert metadata["max_retries"] == MAX_SQL_RETRIES
+
+    assert metadata["retry_available"] is True
+
+    assert (
+        metadata["error"]
+        == "no such column: fo.customer_name"
+    )
+
+    print("Retry metadata: PASS")
+
+
+# ============================================================
+# TEST 6 — Retry exhausted
+# ============================================================
+
+def test_retry_metadata_exhausted():
+
+    metadata = build_retry_metadata(
+        attempt=MAX_SQL_RETRIES + 1,
+        max_retries=MAX_SQL_RETRIES,
+        error="no such column: fo.customer_name",
+    )
+
+    assert (
+        metadata["retry_available"]
+        is False
+    )
+
+    print("Retry exhaustion metadata: PASS")
+
+
+# ============================================================
+# TEST 7 — Correction prompt
+# ============================================================
+
+def test_correction_prompt():
+
+    prompt = build_correction_prompt(
+        question="How many orders were cancelled?",
+        previous_sql=(
+            "SELECT COUNT(fo.fake_column) "
+            "FROM fact_orders fo"
+        ),
+        validation_error=(
+            "no such column: fo.fake_column"
+        ),
+        schema_context=(
+            "fact_orders(order_id, order_status)"
+        ),
+    )
+
+    assert (
+        "How many orders were cancelled?"
+        in prompt
+    )
+
+    assert (
+        "fo.fake_column"
+        in prompt
+    )
+
+    assert (
+        "no such column: fo.fake_column"
+        in prompt
+    )
+
+    assert (
+        "fact_orders(order_id, order_status)"
+        in prompt
+    )
+
+    assert (
+        "Return SQL only."
+        in prompt
+    )
+
+    print("Correction prompt generation: PASS")
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    print("=" * 70)
+    print("SQL RETRY UNIT TESTS")
+    print("=" * 70)
+
+    test_retryable_schema_errors()
+    test_non_retryable_errors()
+    test_empty_errors()
+    test_case_insensitive_matching()
+    test_retry_metadata()
+    test_retry_metadata_exhausted()
+    test_correction_prompt()
+
+    print()
+    print("=" * 70)
+    print("ALL SQL RETRY TESTS PASSED")
+    print("=" * 70)

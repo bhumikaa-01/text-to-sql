@@ -32,6 +32,8 @@ MAX_SQL_RETRIES = 2
 RETRYABLE_ERROR_MARKERS = (
     "unknown column",
     "unknown table",
+    "no such column",
+    "no such table",
     "schema validation",
     "invalid sql",
     "syntax error",

@@ -13,15 +13,24 @@ async def test_sql_retry_integration():
     print("=" * 70)
 
     responses = [
-        """
-        SELECT SUM(revenue)
-        FROM fact_orders;
-        """,
-        """
-        SELECT SUM(order_total_usd) AS total_revenue
-        FROM fact_orders;
-        """,
-    ]
+    # 1. Initial SQL generation
+    """
+    SELECT SUM(revenue)
+    FROM fact_orders;
+    """,
+
+    # 2. SQL correction
+    """
+    SELECT SUM(order_total_usd) AS total_revenue
+    FROM fact_orders;
+    """,
+
+    # 3. Query explanation
+    """
+    The query calculates the total revenue by summing
+    order_total_usd across all orders.
+    """,
+]
 
     state = {
         "calls": 0,
@@ -64,7 +73,7 @@ async def test_sql_retry_integration():
         state["calls"],
     )
 
-    assert state["calls"] == 2
+    assert state["calls"] == 3
 
     print(
         "Automatic correction triggered: PASS"

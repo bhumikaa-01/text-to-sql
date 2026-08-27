@@ -445,7 +445,7 @@ async def run_query(
             "hit": False,
         },
 
-        "latency_ms": 0,
+        "latency_ms": latency_ms,
 
         "error": (
             "Request blocked by the security guard. "

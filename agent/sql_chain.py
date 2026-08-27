@@ -56,6 +56,8 @@ from agent.confidence import calculate_confidence
 from agent.table_correctness import check_table_correctness
 from agent.semantic_evaluator import evaluate_semantics
 from agent.query_explainer import explain_query
+from agent.telemetry_store import QueryEvent
+from agent.telemetry_store import record_event
 from agent.query_cache import (
     get_cached_response,
     set_cached_response,
@@ -338,6 +340,7 @@ async def run_query(
             ↓
         Structured response
     """
+    start_time = time.monotonic()
 
     # ====================================================
     # STEP 0 — USER INPUT SECURITY GUARD
@@ -357,6 +360,48 @@ async def run_query(
         logger.warning(
             "User input blocked by security guard: %s",
             input_guard["reason"],
+        )
+
+        latency_ms = int(
+            (
+                time.monotonic()
+                - start_time
+            )
+            * 1000
+        )
+
+        telemetry_event = QueryEvent(
+            question=question,
+            status="BLOCKED",
+            latency_ms=latency_ms,
+
+            sql_generated=False,
+            sql_safe=False,
+
+            sql_correction_attempted=False,
+            sql_correction_count=0,
+            sql_correction_applied=False,
+
+            cache_hit=False,
+
+            resource_decision="BLOCK",
+
+            semantic_correct=None,
+            semantic_score=0.0,
+
+            confidence_score=0.0,
+            confidence_level="LOW",
+
+            tables_used=[],
+
+            error=input_guard["reason"],
+        )
+
+        record_event(telemetry_event)
+
+        logger.info(
+            "Blocked telemetry event recorded: request_id=%s",
+            telemetry_event.request_id,
         )
 
         return {
@@ -408,8 +453,6 @@ async def run_query(
             "SQL operation or injection pattern."
         ),
     }
-
-    start_time = time.monotonic()
 
     # ====================================================
     # STEP — Query cache lookup
@@ -1982,8 +2025,51 @@ async def run_query(
             question,
         )
 
-        return response
+        # ====================================================
+        # STEP — Record successful telemetry event
+        # ====================================================
 
+        telemetry_event = QueryEvent(
+            question=question,
+            status="SUCCESS",
+            latency_ms=latency_ms,
+
+            sql_generated=bool(generated_sql),
+            sql_safe=True,
+
+            sql_correction_attempted=sql_correction_attempted,
+            sql_correction_count=execution_retry_count,
+            sql_correction_applied=sql_correction_applied,
+
+            cache_hit=False,
+
+            resource_decision=resource_decision,
+
+            semantic_correct=semantic_evaluation.get(
+                "is_correct"
+            ),
+            semantic_score=semantic_evaluation.get(
+                "score",
+                0.0,
+            ),
+
+            confidence_score=confidence["score"],
+            confidence_level=confidence["level"],
+
+            tables_used=tables_used,
+
+            error="",
+        )
+
+        record_event(telemetry_event)
+
+        logger.info(
+            "Telemetry event recorded: request_id=%s",
+            telemetry_event.request_id,
+        )
+
+        return response
+    
     # ========================================================
     # GLOBAL ERROR HANDLING
     # ========================================================

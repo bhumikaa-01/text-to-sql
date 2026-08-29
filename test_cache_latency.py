@@ -6,7 +6,10 @@ from agent.query_cache import (
 )
 from agent.sql_chain import run_query
 
+from unittest.mock import patch
+import pytest
 
+@pytest.mark.asyncio
 async def test_cache_hit_latency():
 
     print("=" * 70)

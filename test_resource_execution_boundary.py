@@ -11,8 +11,9 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from agent import sql_chain
+import pytest
 
-
+@pytest.mark.asyncio
 async def test_block_does_not_reach_database():
 
     question = (

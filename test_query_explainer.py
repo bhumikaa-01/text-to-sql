@@ -2,7 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 from agent.query_explainer import explain_query
-
+import pytest
 
 # ============================================================
 # MOCK LLM
@@ -31,7 +31,7 @@ def create_mock_llm(response_text: str):
 # TEST 1 — Revenue query
 # ============================================================
 
-
+@pytest.mark.asyncio
 async def test_revenue_explanation():
 
     sql = """
@@ -98,7 +98,7 @@ async def test_revenue_explanation():
 # TEST 2 — COUNT DISTINCT delivered orders
 # ============================================================
 
-
+@pytest.mark.asyncio
 async def test_distinct_delivered_orders():
 
     sql = """
@@ -149,7 +149,7 @@ async def test_distinct_delivered_orders():
 # TEST 3 — Top 5 categories by order count
 # ============================================================
 
-
+@pytest.mark.asyncio
 async def test_top_5_categories():
 
     sql = """
@@ -201,7 +201,7 @@ async def test_top_5_categories():
 # TEST 4 — LLM failure fallback
 # ============================================================
 
-
+@pytest.mark.asyncio
 async def test_llm_fallback():
 
     sql = """
@@ -247,7 +247,7 @@ async def test_llm_fallback():
 # TEST 5 — Adversarial grounding
 # ============================================================
 
-
+@pytest.mark.asyncio
 async def test_grounding_rejects_wrong_revenue_claim():
     """
     Verify that the system rejects an LLM explanation
@@ -290,7 +290,7 @@ async def test_grounding_rejects_wrong_revenue_claim():
         "Adversarial revenue/status grounding: PASS"
     )
 
-
+@pytest.mark.asyncio
 async def test_grounding_rejects_wrong_order_claim():
     """
     Verify that the system rejects an LLM explanation

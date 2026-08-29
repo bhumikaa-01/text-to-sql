@@ -69,6 +69,7 @@ def calculate_confidence(
     execution_success: bool,
     result_quality: float,
     table_correct: bool | None,
+    semantic_correct: bool | None = None,
 ) -> dict[str, Any]:
     """
     Calculate a reliability score for a generated SQL query.
@@ -274,6 +275,21 @@ def calculate_confidence(
         score = min(
             score,
             40.0,
+        )
+
+    # ========================================================
+    # Semantic correctness cap
+    # ========================================================
+    #
+    # An executable SQL query can still answer the wrong
+    # question. Prevent such queries from receiving a
+    # MEDIUM or HIGH confidence score.
+    #
+
+    if semantic_correct is False:
+        score = min(
+            score,
+            MEDIUM_THRESHOLD - 1,
         )
 
     # ========================================================

@@ -507,6 +507,125 @@ async def run_query(
             len(schema_context),
         )
 
+        # ----------------------------------------------------
+        # RAG relevance guard
+        # ----------------------------------------------------
+        # If the retriever cannot find schema relevant enough
+        # to the user's question, do not send the question to
+        # the LLM. This prevents unrelated questions such as
+        # "What is the capital of France?" from being converted
+        # into meaningless SQL against an unrelated table.
+        # ----------------------------------------------------
+
+        if not schema_context.strip():
+
+            latency_ms = int(
+                (
+                    time.monotonic()
+                    - start_time
+                )
+                * 1000
+            )
+
+            logger.warning(
+                "No relevant schema found for question: %s",
+                question,
+            )
+
+            confidence = calculate_confidence(
+                sql_safe=False,
+                schema_valid=False,
+                resource_decision="BLOCK",
+                execution_success=False,
+                result_quality=0,
+                table_correct=None,
+            )
+
+            logger.info(
+                "Confidence score: %.2f (%s)",
+                confidence["score"],
+                confidence["level"],
+            )
+
+            return {
+                "sql": "",
+                "results": [],
+                "tables_used": [],
+
+                "requires_approval": False,
+                "approval_reason": "",
+
+                "resource_guard": {
+                    "decision": "BLOCK",
+                    "risk_level": "HIGH",
+                    "violations": [
+                        "RAG_RELEVANCE",
+                    ],
+                    "reason": (
+                        "No sufficiently relevant database "
+                        "schema was found for the user's question."
+                    ),
+                },
+
+                "semantic_evaluation": {
+                    "is_correct": False,
+                    "score": 0.0,
+                    "reason": (
+                        "Semantic evaluation was skipped because "
+                        "no relevant schema was retrieved."
+                    ),
+                    "issues": [
+                        "RAG_RELEVANCE",
+                    ],
+                },
+
+                "explanation": {
+                    "summary": (
+                        "The question does not appear to match "
+                        "the available database schema."
+                    ),
+                    "tables_used": [],
+                    "operation_count": 0,
+                },
+
+                "visualization": {
+                    "recommended": False,
+                    "chart_type": None,
+                    "x_axis": None,
+                    "y_axis": None,
+                    "reason": (
+                        "No visualization is generated because "
+                        "no SQL was executed."
+                    ),
+                    "chart": {
+                        "rendered": False,
+                        "chart_type": None,
+                    },
+                },
+
+                "confidence": confidence,
+
+                "cache": {
+                    "hit": False,
+                },
+
+                "latency_ms": latency_ms,
+
+                "error": (
+                    "I couldn't find information relevant to "
+                    "your question in the available database. "
+                    "Please ask a question about the available "
+                    "orders, customers, products, sellers, "
+                    "reviews, or revenue data."
+                ),
+            }
+
+        # ====================================================
+        # STEP 2 — Load few-shot examples
+        # ====================================================
+
+        few_shot = _load_few_shot_examples()
+    
         # ====================================================
         # STEP 2 — Load few-shot examples
         # ====================================================
@@ -857,6 +976,13 @@ async def run_query(
                             "SCHEMA_VALIDATION",
                         ],
                         "reason": schema_reason,
+                    },
+
+                    "sql_retry": {
+                        "attempted": retry_count > 0,
+                        "retry_count": retry_count,
+                        "max_retries": MAX_SQL_RETRIES,
+                        "corrected": retry_count > 0,
                     },
 
                     "confidence": confidence,
@@ -1898,7 +2024,10 @@ async def run_query(
                 execution_success=execution_success,
                 result_quality=result_quality,
                 table_correct=table_correct,
-        )
+                semantic_correct=semantic_evaluation.get(
+                        "is_correct"
+                ),
+            )
 
         logger.info(
             "Confidence score: %.2f (%s)",

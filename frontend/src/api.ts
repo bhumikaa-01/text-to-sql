@@ -2,12 +2,63 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/' })
 
+export interface SemanticEvaluation {
+  is_correct?: boolean | null
+  score?: number | null
+  reason?: string
+  issues?: string[]
+}
+
+export interface ResourceGuard {
+  decision?: string
+  risk_level?: string
+  violations?: string[]
+  reason?: string
+}
+
+export interface Confidence {
+  score?: number
+  level?: string
+  factors?: Record<string, number>
+}
+
+export interface Explanation {
+  summary?: string
+  tables_used?: string[]
+  operation_count?: number
+}
+
+export interface Visualization {
+  recommended?: boolean
+  chart_type?: string | null
+  x_axis?: string | null
+  y_axis?: string | null
+  reason?: string
+  chart?: {
+    rendered?: boolean
+    chart_type?: string | null
+    image_base64?: string
+  }
+}
+
 export interface QueryResponse {
   sql: string
   results: Record<string, unknown>[]
   tables_used: string[]
   requires_approval: boolean
   approval_reason?: string
+
+  semantic_evaluation?: SemanticEvaluation
+  explanation?: Explanation
+  visualization?: Visualization
+  resource_guard?: ResourceGuard
+  confidence?: Confidence
+
+  cache?: {
+    hit?: boolean
+  }
+
+  error?: string
   latency_ms: number
 }
 
@@ -33,8 +84,14 @@ export async function postQuery(question: string): Promise<QueryResponse> {
   return data
 }
 
-export async function postApprove(sql: string, approved: boolean): Promise<ApproveResponse> {
-  const { data } = await api.post<ApproveResponse>('/api/approve', { sql, approved })
+export async function postApprove(
+  sql: string,
+  approved: boolean
+): Promise<ApproveResponse> {
+  const { data } = await api.post<ApproveResponse>('/api/approve', {
+    sql,
+    approved,
+  })
   return data
 }
 

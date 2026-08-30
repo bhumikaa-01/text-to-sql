@@ -108,13 +108,31 @@ Rules:
 6. Prefer NULLIF(x, 0) to avoid division-by-zero.
 7. Limit results to 1000 rows unless the question asks for all rows.
 
-8. For monetary values and revenue calculations:
+8. IMPORTANT — Answer EVERY part of the user's question.
+   - Carefully identify all requested outputs, conditions, comparisons, rankings,
+     trends, and follow-up requirements before writing SQL.
+   - Do not answer only the first part of a multi-part question.
+   - If the question asks for a trend AND a maximum/minimum/top result,
+     the SQL must provide both.
+   - If the question asks "which month had the highest", the query must
+     explicitly determine the month with the highest value, not merely return
+     all months in chronological order.
+   - Use CTEs, subqueries, window functions, or conditional aggregation when
+     necessary to answer multiple requested components in one SELECT query.
+
+9. Before finalizing the SQL, mentally verify:
+   - Does it answer the exact question?
+   - Does it satisfy every part of the question?
+   - Are requested rankings/maxima/minima explicitly calculated?
+   - Are requested filters and time periods included?
+
+10. For monetary values and revenue calculations:
    - Always use ROUND(value, 2).
    - Use ROUND(SUM(...), 2) for revenue aggregations.
    - Use ROUND(AVG(...), 2) for averages.
    - Never return floating-point values with excessive precision.
 
-9. Never generate INSERT, UPDATE, DELETE, or DROP statements.
+11. Never generate INSERT, UPDATE, DELETE, or DROP statements.
 Examples:
 
 Question: What is the total revenue?

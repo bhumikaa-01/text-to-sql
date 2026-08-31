@@ -27,6 +27,9 @@ It answers a narrower question:
 import re
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 from agent.semantic_layer import SEMANTIC_SCHEMA
 
 
@@ -129,6 +132,94 @@ def extract_sql_tables(
             )
 
     return tables
+
+# ============================================================
+# CTE EXTRACTION
+# ============================================================
+
+def extract_cte_info(
+    sql: str,
+) -> tuple[set[str], dict[str, set[str]]]:
+    """
+    Extract CTE names and their output columns.
+
+    Example:
+
+        WITH YearlyRevenue AS (
+            SELECT
+                ... AS revenue_2017,
+                ... AS revenue_2018
+            FROM fact_orders
+        )
+
+    Returns:
+
+        (
+            {"yearlyrevenue"},
+            {
+                "yearlyrevenue": {
+                    "revenue_2017",
+                    "revenue_2018",
+                }
+            }
+        )
+
+    CTEs are query-level objects, not physical database tables.
+    """
+
+    if not sql or not sql.strip():
+        return set(), {}
+
+    try:
+        tree = sqlglot.parse_one(sql)
+
+    except Exception:
+        return set(), {}
+
+    cte_names: set[str] = set()
+    cte_columns: dict[str, set[str]] = {}
+
+    for cte in tree.find_all(exp.CTE):
+
+        cte_name = cte.alias_or_name
+
+        if not cte_name:
+            continue
+
+        cte_name = cte_name.lower()
+
+        cte_names.add(cte_name)
+
+        output_columns: set[str] = set()
+
+        cte_body = cte.this
+
+        for select in cte_body.find_all(exp.Select):
+
+            for projection in select.expressions:
+
+                alias = projection.alias
+
+                if alias:
+                    output_columns.add(
+                        alias.lower()
+                    )
+                    continue
+
+                if isinstance(
+                    projection,
+                    exp.Column,
+                ):
+                    output_columns.add(
+                        projection.name.lower()
+                    )
+
+        cte_columns[cte_name] = output_columns
+
+    return (
+        cte_names,
+        cte_columns,
+    )
 
 
 # ============================================================
@@ -297,12 +388,22 @@ def check_table_correctness(
         }
 
     # --------------------------------------------------------
-    # Extract tables
+    # Extract CTE information
     # --------------------------------------------------------
 
-    tables_used = extract_sql_tables(
+    cte_names, cte_columns = extract_cte_info(
         sql
     )
+
+    # --------------------------------------------------------
+    # Extract physical tables
+    # --------------------------------------------------------
+
+    tables_used = [
+        table
+        for table in extract_sql_tables(sql)
+        if table not in cte_names
+    ]
 
     invalid_tables = [
         table
@@ -342,6 +443,29 @@ def check_table_correctness(
 
             continue
 
+        # ----------------------------------------------------
+        # CTE reference
+        # ----------------------------------------------------
+
+        if table in cte_names:
+
+            valid_columns = cte_columns.get(
+                table,
+                set(),
+            )
+
+            if column not in valid_columns:
+
+                invalid_columns.append(
+                    f"{table}.{column}"
+                )
+
+            continue
+
+        # ----------------------------------------------------
+        # Physical table reference
+        # ----------------------------------------------------
+
         valid_columns = TABLE_COLUMNS.get(
             table,
             set(),
@@ -352,7 +476,6 @@ def check_table_correctness(
             invalid_columns.append(
                 f"{table}.{column}"
             )
-
     # --------------------------------------------------------
     # Build issues
     # --------------------------------------------------------

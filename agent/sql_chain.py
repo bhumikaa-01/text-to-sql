@@ -47,6 +47,7 @@ from sqlalchemy import text
 
 from agent.hitl_guard import check_sql
 from agent.input_guard import check_user_input
+from agent.schema_relevance_guard import check_schema_relevance
 from agent.retriever import get_relevant_schema
 from model.database import get_engine, get_session
 from model.schema import Base, QueryLog
@@ -471,6 +472,118 @@ async def run_query(
             "SQL operation or injection pattern."
         ),
     }
+
+        # ====================================================
+    # STEP 0.5 — SCHEMA RELEVANCE GUARD
+    # ====================================================
+
+    schema_relevance = check_schema_relevance(question)
+
+    logger.info(
+        "Schema relevance check: relevant=%s matched_terms=%s",
+        schema_relevance["relevant"],
+        schema_relevance["matched_terms"],
+    )
+
+    if not schema_relevance["relevant"]:
+
+        logger.warning(
+            "Question rejected by schema relevance guard: %s",
+            schema_relevance["reason"],
+        )
+
+        latency_ms = int(
+            (
+                time.monotonic()
+                - start_time
+            )
+            * 1000
+        )
+
+        telemetry_event = QueryEvent(
+            question=question,
+            status="OUT_OF_SCOPE",
+            latency_ms=latency_ms,
+
+            sql_generated=False,
+            sql_safe=False,
+
+            sql_correction_attempted=False,
+            sql_correction_count=0,
+            sql_correction_applied=False,
+
+            cache_hit=False,
+
+            resource_decision="BLOCK",
+
+            semantic_correct=None,
+            semantic_score=0.0,
+
+            confidence_score=0.0,
+            confidence_level="LOW",
+
+            tables_used=[],
+
+            error=schema_relevance["reason"],
+        )
+
+        record_event(telemetry_event)
+
+        logger.info(
+            "Out-of-scope telemetry event recorded: request_id=%s",
+            telemetry_event.request_id,
+        )
+
+        return {
+            "sql": "",
+            "results": [],
+            "tables_used": [],
+
+            "requires_approval": False,
+            "approval_reason": "",
+
+            "resource_guard": {
+                "decision": "BLOCK",
+                "risk_level": "LOW",
+                "violations": [
+                    "SCHEMA_RELEVANCE",
+                ],
+                "reason": schema_relevance["reason"],
+            },
+
+            "semantic_evaluation": {},
+
+            "explanation": {},
+
+            "visualization": {},
+
+            "confidence": {
+                "score": 0,
+                "level": "LOW",
+                "factors": {
+                    "sql_safety": 0,
+                    "schema_validity": 0,
+                    "resource_safety": 0,
+                    "execution": 0,
+                    "result_quality": 0,
+                    "table_correctness": 0,
+                },
+            },
+
+            "cache": {
+                "hit": False,
+            },
+
+            "latency_ms": latency_ms,
+
+            "error": (
+                "This question appears to be outside "
+                "the scope of the available database. "
+                "Please ask a question related to the "
+                "available data."
+            ),
+        }
+
 
     # ====================================================
     # STEP — Query cache lookup
